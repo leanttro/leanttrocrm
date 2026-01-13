@@ -1,0 +1,14 @@
+[server]
+headless = true
+enableCORS = false
+enableXsrfProtection = false
+baseUrlPath = "crm"
+port = 8501
+
+[theme]
+base = "dark"
+primaryColor = "#D2FF00" 
+backgroundColor = "#050505"
+secondaryBackgroundColor = "#111111"
+textColor = "#FAFAFA"
+font = "sans serif"
