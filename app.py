@@ -1,11 +1,12 @@
 import streamlit as st
 import pandas as pd
 import requests
-from groq import Groq  # <--- NOVA LIB
+from groq import Groq
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
+from email.mime.image import MIMEImage  # <--- IMPORTANTE PARA IMAGEM INLINE
 from email import encoders
 from datetime import datetime, date
 import time
@@ -245,7 +246,6 @@ def carregar_dados(token, user_id):
         if r.status_code == 200:
             df = pd.DataFrame(r.json()['data'])
             if 'id' in df.columns:
-                # Ordenar colunas essenciais primeiro
                 cols_pri = ['id', 'nome', 'empresa', 'email', 'telefone', 'status']
                 cols_existentes = [c for c in cols_pri if c in df.columns]
                 cols_restantes = [c for c in df.columns if c not in cols_existentes]
@@ -258,13 +258,10 @@ def atualizar_item(token, user_id, item_id, dados):
     requests.patch(f"{DIRECTUS_URL}/items/{table}/{item_id}", json=dados, headers={"Authorization": f"Bearer {token}"}, verify=False)
 
 def contar_envios_hoje(token):
-    """Conta quantos emails este usuário já enviou hoje para controlar a cota"""
     try:
         base_url = DIRECTUS_URL.rstrip('/')
         hoje_str = datetime.now().strftime("%Y-%m-%d")
-        # Filtra pela tabela global de logs usando o user_created
         url = f"{base_url}/items/historico_envios?filter[data_envio][_gte]={hoje_str}&filter[user_created][_eq]=$CURRENT_USER&aggregate[count]=*"
-        
         r = requests.get(url, headers={"Authorization": f"Bearer {token}"}, verify=False)
         if r.status_code == 200:
             data = r.json()['data']
@@ -274,7 +271,6 @@ def contar_envios_hoje(token):
     return 0
 
 def registrar_log_envio(token, destinatario, assunto, status):
-    """Salva o log para auditoria e cota"""
     try:
         base_url = DIRECTUS_URL.rstrip('/')
         payload = {
@@ -288,22 +284,55 @@ def registrar_log_envio(token, destinatario, assunto, status):
 
 def enviar_email_smtp(smtp_config, to, subject, body, anexo=None):
     try:
-        msg = MIMEMultipart()
-        msg['From'] = smtp_config['user']
-        msg['To'] = to
-        msg['Subject'] = subject
-        
-        # Anexar corpo HTML
-        msg.attach(MIMEText(body, 'html'))
-        
-        # Lógica de anexo (se houver)
-        if anexo is not None:
-            part = MIMEBase('application', 'octet-stream')
-            part.set_payload(anexo.getvalue())
-            encoders.encode_base64(part)
-            part.add_header('Content-Disposition', f'attachment; filename="{anexo.name}"')
-            msg.attach(part)
+        # Verifica se vamos fazer inserção de IMAGEM INLINE
+        usar_imagem_inline = False
+        if anexo is not None and "{{imagem}}" in body.lower():
+            # Verifica se o arquivo é imagem (pelo tipo MIME)
+            if "image" in anexo.type:
+                usar_imagem_inline = True
 
+        if usar_imagem_inline:
+            # Estrutura para imagem inline é 'related'
+            msg = MIMEMultipart('related')
+            msg['From'] = smtp_config['user']
+            msg['To'] = to
+            msg['Subject'] = subject
+
+            # Cria parte alternativa para texto/html
+            msg_alternative = MIMEMultipart('alternative')
+            msg.attach(msg_alternative)
+
+            # Substitui tag pela referência CID
+            cid_id = "imagem_corpo"
+            body_atualizado = body.replace("{{imagem}}", f'<br><img src="cid:{cid_id}" style="max-width:100%; height:auto;"><br>')
+            msg_alternative.attach(MIMEText(body_atualizado, 'html'))
+
+            # Processa e anexa a imagem com Content-ID
+            img_data = anexo.getvalue()
+            image = MIMEImage(img_data)
+            image.add_header('Content-ID', f'<{cid_id}>') # Os <> são obrigatórios no padrão
+            image.add_header('Content-Disposition', 'inline', filename=anexo.name)
+            msg.attach(image)
+
+        else:
+            # Estrutura padrão (Texto + Anexo PDF ou Imagem normal)
+            msg = MIMEMultipart()
+            msg['From'] = smtp_config['user']
+            msg['To'] = to
+            msg['Subject'] = subject
+            
+            # Corpo HTML normal
+            msg.attach(MIMEText(body, 'html'))
+            
+            # Anexo Normal (Se existir)
+            if anexo is not None:
+                part = MIMEBase('application', 'octet-stream')
+                part.set_payload(anexo.getvalue())
+                encoders.encode_base64(part)
+                part.add_header('Content-Disposition', f'attachment; filename="{anexo.name}"')
+                msg.attach(part)
+
+        # Envio SMTP padrão
         server = smtplib.SMTP(smtp_config['host'], smtp_config['port'])
         server.starttls()
         server.login(smtp_config['user'], smtp_config['pass'])
@@ -325,6 +354,7 @@ def gerar_copy_ia(ctx):
     O que vendemos: {descricao}
     Tom: Persuasivo, direto e sem enrolação corporativa.
     Foco: Marcar uma reunião.
+    Use a tag {{imagem}} no meio do texto onde faria sentido mostrar um case ou portfolio.
     """
     
     try:
@@ -353,7 +383,7 @@ def validar_token(token):
 #  INTERFACE
 # =========================================================
 
-# --- 1. PERSISTÊNCIA DE SESSÃO (Recuperar Token da URL) ---
+# --- 1. PERSISTÊNCIA DE SESSÃO ---
 if 'token' not in st.session_state:
     token_url = st.query_params.get("token")
     if token_url:
@@ -378,7 +408,7 @@ if 'token' not in st.session_state:
                     st.session_state['token'] = token
                     u = requests.get(f"{DIRECTUS_URL}/users/me", headers={"Authorization": f"Bearer {token}"}, verify=False)
                     st.session_state['user'] = u.json()['data']
-                    st.query_params["token"] = token # Salva na URL
+                    st.query_params["token"] = token
                     st.rerun()
                 else:
                     st.error("ACESSO NEGADO")
@@ -389,7 +419,6 @@ token = st.session_state['token']
 user = st.session_state['user']
 user_id = user['id']
 
-# Garante a persistência na URL
 st.query_params["token"] = token
 
 if 'setup_ok' not in st.session_state:
@@ -500,7 +529,7 @@ with tab2:
 
     subtab_int, subtab_ext = st.tabs(["[ 1 ] DISPARO INTERNO", "[ 2 ] IMPORTAR LISTA CSV"])
 
-    # --- DISPARO INTERNO (BASE EXISTENTE) ---
+    # --- DISPARO INTERNO ---
     with subtab_int:
         c1, c2 = st.columns([1, 1])
         with c1:
@@ -511,10 +540,11 @@ with tab2:
         with c2:
             st.markdown("### MENSAGEM")
             assunto = st.text_input("ASSUNTO", key="ass_int")
+            # Adicionado aviso sobre a tag
+            st.caption("Dica: Use {{imagem}} no texto para inserir a imagem no corpo.")
             corpo = st.text_area("CORPO HTML (Use {nome})", height=150, key="body_int")
-            file_anexo = st.file_uploader("ANEXAR ARQUIVO", key="file_int")
+            file_anexo = st.file_uploader("ANEXAR ARQUIVO (IMG vira inline, PDF vira anexo)", key="file_int")
             
-            # BOTÃO DE GERAR COM IA (GROQ)
             if st.button("✨ GERAR COM IA (GROQ)"):
                 sug_a, sug_c = gerar_copy_ia(st.session_state.get('ctx', {}))
                 st.info(f"Assunto: {sug_a}")
@@ -555,7 +585,6 @@ with tab2:
         
         if up_file:
             df_ext = pd.read_csv(up_file)
-            # Normalizar colunas
             df_ext.columns = [c.lower() for c in df_ext.columns]
             
             if 'email' in df_ext.columns:
@@ -564,9 +593,10 @@ with tab2:
                 st.info(f"{len(df_ext)} LEADS ENCONTRADOS")
 
                 assunto_ext = st.text_input("ASSUNTO", key="ass_ext")
+                st.caption("Dica: Use {{imagem}} no texto para inserir a imagem no corpo.")
                 corpo_ext = st.text_area("CORPO HTML (Use {nome})", height=150, key="body_ext")
+                file_anexo_ext = st.file_uploader("ANEXAR ARQUIVO (IMG vira inline, PDF vira anexo)", key="file_ext")
                 
-                # BOTÃO DE GERAR COM IA (GROQ) TAB 2
                 if st.button("✨ GERAR COM IA (GROQ) - EXT"):
                     sug_a, sug_c = gerar_copy_ia(st.session_state.get('ctx', {}))
                     st.info(f"Assunto: {sug_a}")
@@ -591,7 +621,7 @@ with tab2:
                             email_l = row['email']
                             msg_final = corpo_ext.replace("{nome}", str(nome_l))
                             
-                            res, txt = enviar_email_smtp(st.session_state['smtp'], email_l, assunto_ext, msg_final)
+                            res, txt = enviar_email_smtp(st.session_state['smtp'], email_l, assunto_ext, msg_final, file_anexo_ext)
                             registrar_log_envio(token, email_l, assunto_ext, "Enviado [EXT]" if res else f"Erro: {txt}")
 
                             if res: log2.success(f"ENVIADO: {email_l}")
