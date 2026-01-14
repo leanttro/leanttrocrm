@@ -6,7 +6,7 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
-from email.mime.image import MIMEImage  # <--- IMPORTANTE PARA IMAGEM INLINE
+from email.mime.image import MIMEImage
 from email import encoders
 from datetime import datetime, date
 import time
@@ -198,27 +198,33 @@ def inicializar_crm_usuario(token, user_id):
     base_url = DIRECTUS_URL.rstrip('/')
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     
+    # 1. Tabela CRM (Existente)
     r = requests.get(f"{base_url}/collections/{table_name}", headers=headers, verify=False)
-    if r.status_code == 200: return True, "CRM Ready"
-    
-    schema = {
-        "collection": table_name,
-        "schema": {},
-        "meta": {"icon": "rocket", "note": "Leanttro CRM Table"}
-    }
-    requests.post(f"{base_url}/collections", json=schema, headers=headers, verify=False)
-    
-    campos_padrao = [
-        {"field": "nome", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "person"}},
-        {"field": "empresa", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "domain"}},
-        {"field": "email", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "email"}},
-        {"field": "telefone", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "phone"}},
-        {"field": "status", "type": "string", "meta": {"interface": "select-dropdown", "options": {"choices": [{"text": "NOVO", "value": "Novo"}, {"text": "QUENTE", "value": "Quente"}, {"text": "CLIENTE", "value": "Cliente"}]}}},
-        {"field": "obs", "type": "text", "meta": {"interface": "input-multiline"}}
-    ]
-    
-    for campo in campos_padrao:
-        requests.post(f"{base_url}/fields/{table_name}", json=campo, headers=headers, verify=False)
+    if r.status_code != 200:
+        schema = {"collection": table_name, "schema": {}, "meta": {"icon": "rocket", "note": "Leanttro CRM Table"}}
+        requests.post(f"{base_url}/collections", json=schema, headers=headers, verify=False)
+        campos = [
+            {"field": "nome", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "person"}},
+            {"field": "empresa", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "domain"}},
+            {"field": "email", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "email"}},
+            {"field": "telefone", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "phone"}},
+            {"field": "status", "type": "string", "meta": {"interface": "select-dropdown", "options": {"choices": [{"text": "NOVO", "value": "Novo"}, {"text": "QUENTE", "value": "Quente"}, {"text": "CLIENTE", "value": "Cliente"}]}}},
+            {"field": "obs", "type": "text", "meta": {"interface": "input-multiline"}}
+        ]
+        for campo in campos: requests.post(f"{base_url}/fields/{table_name}", json=campo, headers=headers, verify=False)
+
+    # 2. Tabela SMTP (ADICIONADO PARA PERSISTÊNCIA)
+    r_smtp = requests.get(f"{base_url}/collections/config_smtp", headers=headers, verify=False)
+    if r_smtp.status_code != 200:
+        schema_smtp = {"collection": "config_smtp", "schema": {}, "meta": {"icon": "email", "note": "SMTP Users Config"}}
+        requests.post(f"{base_url}/collections", json=schema_smtp, headers=headers, verify=False)
+        campos_smtp = [
+            {"field": "smtp_host", "type": "string"},
+            {"field": "smtp_port", "type": "integer"},
+            {"field": "smtp_user", "type": "string"},
+            {"field": "smtp_pass", "type": "string"}
+        ]
+        for c in campos_smtp: requests.post(f"{base_url}/fields/config_smtp", json=c, headers=headers, verify=False)
         
     return True, "CRM Initialized"
 
@@ -257,6 +263,27 @@ def atualizar_item(token, user_id, item_id, dados):
     table = get_user_table_name(user_id)
     requests.patch(f"{DIRECTUS_URL}/items/{table}/{item_id}", json=dados, headers={"Authorization": f"Bearer {token}"}, verify=False)
 
+# --- FUNÇÕES SMTP (NOVO) ---
+def carregar_config_smtp(token):
+    try:
+        base_url = DIRECTUS_URL.rstrip('/')
+        r = requests.get(f"{base_url}/items/config_smtp?filter[user_created][_eq]=$CURRENT_USER&limit=1", headers={"Authorization": f"Bearer {token}"}, verify=False)
+        if r.status_code == 200:
+            data = r.json()['data']
+            if data: return data[0]
+    except: pass
+    return {}
+
+def salvar_config_smtp(token, dados):
+    base_url = DIRECTUS_URL.rstrip('/')
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    existente = carregar_config_smtp(token)
+    if existente:
+        r = requests.patch(f"{base_url}/items/config_smtp/{existente['id']}", json=dados, headers=headers, verify=False)
+    else:
+        r = requests.post(f"{base_url}/items/config_smtp", json=dados, headers=headers, verify=False)
+    return r.status_code == 200
+
 def contar_envios_hoje(token):
     try:
         base_url = DIRECTUS_URL.rstrip('/')
@@ -287,44 +314,32 @@ def enviar_email_smtp(smtp_config, to, subject, body, anexo=None):
         # Verifica se vamos fazer inserção de IMAGEM INLINE
         usar_imagem_inline = False
         if anexo is not None and "{{imagem}}" in body.lower():
-            # Verifica se o arquivo é imagem (pelo tipo MIME)
             if "image" in anexo.type:
                 usar_imagem_inline = True
 
         if usar_imagem_inline:
-            # Estrutura para imagem inline é 'related'
             msg = MIMEMultipart('related')
             msg['From'] = smtp_config['user']
             msg['To'] = to
             msg['Subject'] = subject
-
-            # Cria parte alternativa para texto/html
             msg_alternative = MIMEMultipart('alternative')
             msg.attach(msg_alternative)
 
-            # Substitui tag pela referência CID
             cid_id = "imagem_corpo"
             body_atualizado = body.replace("{{imagem}}", f'<br><img src="cid:{cid_id}" style="max-width:100%; height:auto;"><br>')
             msg_alternative.attach(MIMEText(body_atualizado, 'html'))
 
-            # Processa e anexa a imagem com Content-ID
             img_data = anexo.getvalue()
             image = MIMEImage(img_data)
-            image.add_header('Content-ID', f'<{cid_id}>') # Os <> são obrigatórios no padrão
+            image.add_header('Content-ID', f'<{cid_id}>') 
             image.add_header('Content-Disposition', 'inline', filename=anexo.name)
             msg.attach(image)
-
         else:
-            # Estrutura padrão (Texto + Anexo PDF ou Imagem normal)
             msg = MIMEMultipart()
             msg['From'] = smtp_config['user']
             msg['To'] = to
             msg['Subject'] = subject
-            
-            # Corpo HTML normal
             msg.attach(MIMEText(body, 'html'))
-            
-            # Anexo Normal (Se existir)
             if anexo is not None:
                 part = MIMEBase('application', 'octet-stream')
                 part.set_payload(anexo.getvalue())
@@ -332,7 +347,6 @@ def enviar_email_smtp(smtp_config, to, subject, body, anexo=None):
                 part.add_header('Content-Disposition', f'attachment; filename="{anexo.name}"')
                 msg.attach(part)
 
-        # Envio SMTP padrão
         server = smtplib.SMTP(smtp_config['host'], smtp_config['port'])
         server.starttls()
         server.login(smtp_config['user'], smtp_config['pass'])
@@ -423,6 +437,15 @@ st.query_params["token"] = token
 
 if 'setup_ok' not in st.session_state:
     inicializar_crm_usuario(token, user_id)
+    # CARREGA SMTP SALVO AO INICIAR
+    cfg = carregar_config_smtp(token)
+    if cfg:
+        st.session_state['smtp'] = {
+            'host': cfg.get('smtp_host', 'smtp.gmail.com'),
+            'port': cfg.get('smtp_port', 587),
+            'user': cfg.get('smtp_user', ''),
+            'pass': cfg.get('smtp_pass', '')
+        }
     st.session_state['setup_ok'] = True
 
 # --- SIDEBAR ---
@@ -453,13 +476,18 @@ with st.sidebar:
             st.success("SALVO")
 
     with st.expander("📧 SMTP CONFIG"):
-        h = st.text_input("HOST", "smtp.gmail.com")
-        p = st.number_input("PORT", 587)
-        u = st.text_input("USER")
-        pw = st.text_input("PASS", type="password")
-        if st.button("CONECTAR SMTP"):
+        # Recupera valores salvos ou usa padrão
+        saved = st.session_state.get('smtp', {})
+        h = st.text_input("HOST", value=saved.get('host', "smtp.gmail.com"))
+        p = st.number_input("PORT", value=int(saved.get('port', 587)))
+        u = st.text_input("USER", value=saved.get('user', ""))
+        pw = st.text_input("PASS", value=saved.get('pass', ""), type="password")
+        
+        # Botão agora salva no banco
+        if st.button("SALVAR E CONECTAR"):
             st.session_state['smtp'] = {'host': h, 'port': p, 'user': u, 'pass': pw}
-            st.success("CONECTADO")
+            salvar_config_smtp(token, {'smtp_host': h, 'smtp_port': p, 'smtp_user': u, 'smtp_pass': pw})
+            st.success("SALVO E CONECTADO")
 
 # --- MAIN ---
 render_header()
@@ -478,7 +506,7 @@ k3.metric("SALDO DISPARO", saldo_envios)
 if saldo_envios <= 0:
     st.error("⛔ COTA DE ENVIO DIÁRIA ATINGIDA. VOLTE AMANHÃ.")
 
-st.markdown("<br>", unsafe_allow_html=True)
+st.markdown("<br>", unsafe_allow_html=True) # MANTIDA A LINHA AQUI
 
 tab1, tab2 = st.tabs(["/// BASE DE LEADS & AÇÕES", "/// MODO SNIPER (DISPARO)"])
 
