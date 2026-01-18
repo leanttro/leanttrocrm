@@ -407,7 +407,8 @@ def gerar_copy_ia(ctx, dados_cliente=None):
     
     # Extrai dor principal se existir
     dor_cliente = ""
-    if dados_cliente and 'dor_principal' in dados_cliente:
+    # CORREÇÃO AQUI: 'is not None' evita o erro de ambiguidade do Pandas
+    if dados_cliente is not None and 'dor_principal' in dados_cliente:
         d = dados_cliente['dor_principal']
         if d and str(d).lower() != 'none':
             dor_cliente = f"A principal dor/necessidade deste cliente é: {d}. Use isso para personalizar o texto."
