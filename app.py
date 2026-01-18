@@ -415,6 +415,7 @@ if 'token' not in st.session_state:
         email = st.text_input("E-MAIL")
         senha = st.text_input("SENHA", type="password")
         if st.button("ACESSAR SISTEMA", use_container_width=True):
+            login_sucesso = False
             try:
                 r = requests.post(f"{DIRECTUS_URL}/auth/login", json={"email": email, "password": senha}, verify=False)
                 if r.status_code == 200:
@@ -423,10 +424,13 @@ if 'token' not in st.session_state:
                     u = requests.get(f"{DIRECTUS_URL}/users/me", headers={"Authorization": f"Bearer {token}"}, verify=False)
                     st.session_state['user'] = u.json()['data']
                     st.query_params["token"] = token
-                    st.rerun()
+                    login_sucesso = True
                 else:
                     st.error("ACESSO NEGADO")
             except: st.error("ERRO DE CONEXÃO")
+            
+            if login_sucesso:
+                st.rerun()
     st.stop()
 
 token = st.session_state['token']
