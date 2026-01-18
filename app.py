@@ -281,14 +281,23 @@ def carregar_dados(token, user_id):
     except: pass
     return pd.DataFrame(columns=["nome", "empresa", "email", "status", "telefone"])
 
-# NOVA FUNÇÃO PARA CARREGAR DADOS DO BOT
+# NOVA FUNÇÃO PARA CARREGAR DADOS DO BOT (ATUALIZADA)
 def carregar_dados_bot(token):
     try:
         r = requests.get(f"{DIRECTUS_URL}/items/clients_bot?limit=-1", headers={"Authorization": f"Bearer {token}"}, verify=False)
         if r.status_code == 200:
             df = pd.DataFrame(r.json()['data'])
+            
+            # Normalizar nomes de colunas para facilitar uso posterior
+            # 'name' -> 'nome', 'whatsapp' -> 'telefone'
+            if not df.empty:
+                rename_map = {}
+                if 'name' in df.columns: rename_map['name'] = 'nome'
+                if 'whatsapp' in df.columns: rename_map['whatsapp'] = 'telefone'
+                df.rename(columns=rename_map, inplace=True)
+
             # Filtra colunas relevantes para exibição
-            cols_desejadas = ['id', 'name', 'email', 'session_uuid']
+            cols_desejadas = ['id', 'nome', 'email', 'telefone', 'dor_principal', 'session_uuid']
             cols_existentes = [c for c in cols_desejadas if c in df.columns]
             return df[cols_existentes]
     except: pass
@@ -390,19 +399,27 @@ def enviar_email_smtp(smtp_config, to, subject, body, anexo=None):
         return True, "OK"
     except Exception as e: return False, str(e)
 
-def gerar_copy_ia(ctx):
+def gerar_copy_ia(ctx, dados_cliente=None):
     if not groq_client: return "Erro", "Configure a GROQ_API_KEY no ambiente"
     
     empresa = ctx.get('empresa', 'Nossa Empresa')
     descricao = ctx.get('descricao', 'Soluções Digitais')
     
+    # Extrai dor principal se existir
+    dor_cliente = ""
+    if dados_cliente and 'dor_principal' in dados_cliente:
+        d = dados_cliente['dor_principal']
+        if d and str(d).lower() != 'none':
+            dor_cliente = f"A principal dor/necessidade deste cliente é: {d}. Use isso para personalizar o texto."
+
     prompt = f"""
     Aja como um copywriter profissional B2B.
     Escreva um email curto (max 3 parágrafos) de prospecção fria.
     Minha Empresa: {empresa}
     O que vendemos: {descricao}
+    {dor_cliente}
     Tom: Persuasivo, direto e sem enrolação corporativa.
-    Foco: Marcar uma reunião.
+    Foco: Marcar uma reunião ou resolver o problema dele.
     IMPORTANTE: Não coloque Assunto: no corpo, apenas o texto do email.
     """
     
@@ -417,7 +434,7 @@ def gerar_copy_ia(ctx):
             model="llama-3.3-70b-versatile",
         )
         msg_ia = chat_completion.choices[0].message.content
-        return "Proposta de Parceria", msg_ia
+        return "Proposta Personalizada", msg_ia
     except Exception as e:
         return "Erro IA", str(e)
 
@@ -586,7 +603,8 @@ with tab1:
         fonte = st.radio("Fonte:", ["Base Mestre", "Bot Automático"], horizontal=True)
         
         df_ativo = df if fonte == "Base Mestre" else df_bot
-        col_nome = 'nome' if fonte == "Base Mestre" else 'name'
+        # Nota: carregar_dados_bot renomeou 'name' para 'nome' para padronizar
+        col_nome = 'nome' 
         
         if not df_ativo.empty and col_nome in df_ativo.columns:
             nomes = df_ativo[col_nome].tolist()
@@ -598,8 +616,15 @@ with tab1:
                 # Campos comuns
                 nome_cliente = dados_cli.get(col_nome, '')
                 email_cliente = dados_cli.get('email', '')
-                tel = str(dados_cli.get('telefone', '')).replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
                 
+                # Pega 'telefone' (já renomeado em carregar_dados_bot)
+                tel = str(dados_cli.get('telefone', '')).replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+                if tel == 'nan' or tel == 'None': tel = ""
+                
+                # Mostra Dor se existir (para debug/visão do usuário)
+                if 'dor_principal' in dados_cli:
+                    st.info(f"💡 Dor: {dados_cli['dor_principal']}")
+
                 # ABAS DE CANAL DE AÇÃO
                 act_w, act_e = st.tabs(["WHATSAPP", "GMAIL (IA)"])
                 
@@ -614,14 +639,13 @@ with tab1:
                 with act_e:
                     st.caption("Gera um e-mail com IA e abre no seu Gmail para editar.")
                     if st.button("✨ GERAR E-MAIL IA"):
-                        assunto_ia, corpo_ia = gerar_copy_ia(st.session_state.get('ctx', {}))
+                        # Passa dados do cliente (incluindo dor) para a IA
+                        assunto_ia, corpo_ia = gerar_copy_ia(st.session_state.get('ctx', {}), dados_cli)
                         
                         # Substitui placeholder se houver
                         corpo_final = corpo_ia.replace("{nome}", nome_cliente)
                         
                         # Cria link para abrir o Gmail (Web) com os campos preenchidos
-                        # https://mail.google.com/mail/?view=cm&fs=1&to=email&su=subject&body=body
-                        
                         assunto_safe = urllib.parse.quote(assunto_ia)
                         corpo_safe = urllib.parse.quote(corpo_final)
                         
@@ -636,15 +660,37 @@ with tab2:
         st.warning("BLOQUEADO: COTA ATINGIDA")
         st.stop()
 
-    subtab_int, subtab_ext = st.tabs(["[ 1 ] DISPARO INTERNO", "[ 2 ] IMPORTAR LISTA CSV"])
+    subtab_int, subtab_ext = st.tabs(["[ 1 ] DISPARO INTERNO", "[ 2 ] IMPORTAR EXCEL"])
 
-    # --- DISPARO INTERNO ---
+    # --- DISPARO INTERNO (BASE MESTRE + BOT) ---
     with subtab_int:
         c1, c2 = st.columns([1, 1])
+        
+        # PREPARA LISTA UNIFICADA PARA O MULTISELECT
+        lista_mestre = pd.DataFrame()
+        lista_bot_u = pd.DataFrame()
+
+        if not df.empty and 'email' in df.columns:
+            lista_mestre = df[['nome', 'email']].copy()
+            lista_mestre['origem'] = 'Mestre'
+        
+        if not df_bot.empty and 'email' in df_bot.columns:
+            lista_bot_u = df_bot[['nome', 'email']].copy()
+            lista_bot_u['origem'] = 'Bot'
+
+        # Concatena bases
+        df_unificado = pd.concat([lista_mestre, lista_bot_u], ignore_index=True)
+        # Filtra emails validos
+        df_unificado = df_unificado[df_unificado['email'].str.contains("@", na=False)]
+        
+        # Cria label única para evitar duplicados de nome
+        if not df_unificado.empty:
+            df_unificado['label'] = df_unificado['nome'] + " (" + df_unificado['origem'] + ")"
+        
         with c1:
-            st.markdown("### SELEÇÃO")
-            leads = df[df['email'].str.contains("@", na=False)] if 'email' in df.columns else pd.DataFrame()
-            sels = st.multiselect("ALVOS DA BASE", leads['nome'].tolist() if not leads.empty else [])
+            st.markdown("### SELEÇÃO (MESTRE + BOT)")
+            opcoes = df_unificado['label'].tolist() if not df_unificado.empty else []
+            sels = st.multiselect("ALVOS", opcoes)
             
         with c2:
             st.markdown("### MENSAGEM")
@@ -667,78 +713,85 @@ with tab2:
             else:
                 bar = st.progress(0)
                 log = st.empty()
-                for i, nome in enumerate(sels):
+                for i, label_sel in enumerate(sels):
                     if i > 0:
                         wait = random.randint(15, 30)
                         log.warning(f"⏳ RECARREGANDO... {wait}s")
                         time.sleep(wait)
                     
-                    tgt = leads[leads['nome'] == nome].iloc[0]
-                    msg_final = corpo.replace("{nome}", tgt['nome'])
+                    # Recupera dados pelo label
+                    tgt = df_unificado[df_unificado['label'] == label_sel].iloc[0]
+                    nome_real = tgt['nome']
+                    email_real = tgt['email']
                     
-                    res, txt = enviar_email_smtp(st.session_state['smtp'], tgt['email'], assunto, msg_final, file_anexo)
-                    registrar_log_envio(token, tgt['email'], assunto, "Enviado" if res else f"Erro: {txt}")
+                    msg_final = corpo.replace("{nome}", nome_real)
                     
-                    if res: log.success(f"ENVIADO PARA {nome}")
-                    else: log.error(f"ERRO {nome}: {txt}")
+                    res, txt = enviar_email_smtp(st.session_state['smtp'], email_real, assunto, msg_final, file_anexo)
+                    registrar_log_envio(token, email_real, assunto, "Enviado" if res else f"Erro: {txt}")
+                    
+                    if res: log.success(f"ENVIADO PARA {nome_real}")
+                    else: log.error(f"ERRO {nome_real}: {txt}")
                     
                     bar.progress((i+1)/len(sels))
                 st.balloons()
                 time.sleep(2)
                 st.rerun()
 
-    # --- DISPARO EXTERNO (CSV) ---
+    # --- DISPARO EXTERNO (EXCEL) ---
     with subtab_ext:
-        st.markdown("### 📂 UPLOAD DE LISTA FRIA (CSV)")
-        up_file = st.file_uploader("ARQUIVO CSV (Colunas: nome, email)", type=["csv"])
+        st.markdown("### 📂 UPLOAD DE LISTA (EXCEL .xlsx)")
+        up_file = st.file_uploader("ARQUIVO EXCEL (Colunas: nome, email)", type=["xlsx"])
         
         if up_file:
-            df_ext = pd.read_csv(up_file)
-            df_ext.columns = [c.lower() for c in df_ext.columns]
-            
-            if 'email' in df_ext.columns:
-                df_ext = df_ext[df_ext['email'].astype(str).str.contains("@")]
-                st.dataframe(df_ext.head(), use_container_width=True)
-                st.info(f"{len(df_ext)} LEADS ENCONTRADOS")
-
-                assunto_ext = st.text_input("ASSUNTO", key="ass_ext")
-                st.caption("Dica: Use {{imagem}} no texto para inserir a imagem no corpo.")
-                corpo_ext = st.text_area("CORPO HTML (Use {nome})", height=150, key="body_ext")
-                file_anexo_ext = st.file_uploader("ANEXAR ARQUIVO (IMG vira inline, PDF vira anexo)", key="file_ext")
+            try:
+                df_ext = pd.read_excel(up_file)
+                df_ext.columns = [c.lower() for c in df_ext.columns]
                 
-                if st.button("✨ GERAR COM IA (GROQ) - EXT"):
-                    sug_a, sug_c = gerar_copy_ia(st.session_state.get('ctx', {}))
-                    st.info(f"Assunto: {sug_a}")
-                    st.code(sug_c)
-                
-                if st.button("🚀 DISPARAR LISTA EXTERNA"):
-                    if not st.session_state.get('smtp'):
-                        st.error("SMTP OFF")
-                    elif len(df_ext) > saldo_envios:
-                         st.error(f"LISTA ({len(df_ext)}) MAIOR QUE SALDO ({saldo_envios})")
-                    else:
-                        bar2 = st.progress(0)
-                        log2 = st.empty()
-                        
-                        for i, row in df_ext.iterrows():
-                            if i > 0:
-                                wait = random.randint(15, 30)
-                                log2.warning(f"⏳ ANTI-SPAM... {wait}s")
-                                time.sleep(wait)
-                            
-                            nome_l = row.get('nome', 'Parceiro')
-                            email_l = row['email']
-                            msg_final = corpo_ext.replace("{nome}", str(nome_l))
-                            
-                            res, txt = enviar_email_smtp(st.session_state['smtp'], email_l, assunto_ext, msg_final, file_anexo_ext)
-                            registrar_log_envio(token, email_l, assunto_ext, "Enviado [EXT]" if res else f"Erro: {txt}")
+                if 'email' in df_ext.columns:
+                    df_ext = df_ext[df_ext['email'].astype(str).str.contains("@")]
+                    st.dataframe(df_ext.head(), use_container_width=True)
+                    st.info(f"{len(df_ext)} LEADS ENCONTRADOS")
 
-                            if res: log2.success(f"ENVIADO: {email_l}")
-                            else: log2.error(f"FALHA: {email_l}")
+                    assunto_ext = st.text_input("ASSUNTO", key="ass_ext")
+                    st.caption("Dica: Use {{imagem}} no texto para inserir a imagem no corpo.")
+                    corpo_ext = st.text_area("CORPO HTML (Use {nome})", height=150, key="body_ext")
+                    file_anexo_ext = st.file_uploader("ANEXAR ARQUIVO (IMG vira inline, PDF vira anexo)", key="file_ext")
+                    
+                    if st.button("✨ GERAR COM IA (GROQ) - EXT"):
+                        sug_a, sug_c = gerar_copy_ia(st.session_state.get('ctx', {}))
+                        st.info(f"Assunto: {sug_a}")
+                        st.code(sug_c)
+                    
+                    if st.button("🚀 DISPARAR LISTA EXTERNA"):
+                        if not st.session_state.get('smtp'):
+                            st.error("SMTP OFF")
+                        elif len(df_ext) > saldo_envios:
+                             st.error(f"LISTA ({len(df_ext)}) MAIOR QUE SALDO ({saldo_envios})")
+                        else:
+                            bar2 = st.progress(0)
+                            log2 = st.empty()
                             
-                            bar2.progress((i+1)/len(df_ext))
-                        st.balloons()
-                        time.sleep(2)
-                        st.rerun()
-            else:
-                st.error("O CSV PRECISA TER UMA COLUNA CHAMADA 'email'")
+                            for i, row in df_ext.iterrows():
+                                if i > 0:
+                                    wait = random.randint(15, 30)
+                                    log2.warning(f"⏳ ANTI-SPAM... {wait}s")
+                                    time.sleep(wait)
+                                
+                                nome_l = row.get('nome', 'Parceiro')
+                                email_l = row['email']
+                                msg_final = corpo_ext.replace("{nome}", str(nome_l))
+                                
+                                res, txt = enviar_email_smtp(st.session_state['smtp'], email_l, assunto_ext, msg_final, file_anexo_ext)
+                                registrar_log_envio(token, email_l, assunto_ext, "Enviado [EXT]" if res else f"Erro: {txt}")
+
+                                if res: log2.success(f"ENVIADO: {email_l}")
+                                else: log2.error(f"FALHA: {email_l}")
+                                
+                                bar2.progress((i+1)/len(df_ext))
+                            st.balloons()
+                            time.sleep(2)
+                            st.rerun()
+                else:
+                    st.error("O EXCEL PRECISA TER UMA COLUNA CHAMADA 'email'")
+            except Exception as e:
+                st.error(f"ERRO AO LER EXCEL: {e}")
