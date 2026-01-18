@@ -82,6 +82,28 @@ st.markdown("""
     div.stButton > button p {
         transform: skewX(10deg); /* Desentorta o texto */
     }
+    
+    /* LINK BUTTON (GMAIL) */
+    a[data-testid="stLinkButton"] {
+        background-color: var(--neon) !important;
+        color: var(--black) !important;
+        border: none;
+        border-radius: 0px;
+        font-weight: 800;
+        font-family: 'Kanit', sans-serif;
+        font-style: italic;
+        text-transform: uppercase;
+        transform: skewX(-10deg);
+        transition: all 0.3s ease;
+        padding: 0.5rem 1rem;
+        text-decoration: none;
+        display: inline-block;
+        text-align: center;
+    }
+    a[data-testid="stLinkButton"]:hover {
+        background-color: var(--white) !important;
+        box-shadow: 0 0 15px rgba(210, 255, 0, 0.4);
+    }
 
     /* INPUTS */
     div[data-baseweb="input"] {
@@ -213,7 +235,7 @@ def inicializar_crm_usuario(token, user_id):
         ]
         for campo in campos: requests.post(f"{base_url}/fields/{table_name}", json=campo, headers=headers, verify=False)
 
-    # 2. Tabela SMTP (ADICIONADO PARA PERSISTÊNCIA)
+    # 2. Tabela SMTP
     r_smtp = requests.get(f"{base_url}/collections/config_smtp", headers=headers, verify=False)
     if r_smtp.status_code != 200:
         schema_smtp = {"collection": "config_smtp", "schema": {}, "meta": {"icon": "email", "note": "SMTP Users Config"}}
@@ -258,6 +280,19 @@ def carregar_dados(token, user_id):
                 return df[cols_existentes + cols_restantes]
     except: pass
     return pd.DataFrame(columns=["nome", "empresa", "email", "status", "telefone"])
+
+# NOVA FUNÇÃO PARA CARREGAR DADOS DO BOT
+def carregar_dados_bot(token):
+    try:
+        r = requests.get(f"{DIRECTUS_URL}/items/clients_bot?limit=-1", headers={"Authorization": f"Bearer {token}"}, verify=False)
+        if r.status_code == 200:
+            df = pd.DataFrame(r.json()['data'])
+            # Filtra colunas relevantes para exibição
+            cols_desejadas = ['id', 'name', 'email', 'session_uuid']
+            cols_existentes = [c for c in cols_desejadas if c in df.columns]
+            return df[cols_existentes]
+    except: pass
+    return pd.DataFrame()
 
 def atualizar_item(token, user_id, item_id, dados):
     table = get_user_table_name(user_id)
@@ -368,7 +403,7 @@ def gerar_copy_ia(ctx):
     O que vendemos: {descricao}
     Tom: Persuasivo, direto e sem enrolação corporativa.
     Foco: Marcar uma reunião.
-    Use a tag {{imagem}} no meio do texto onde faria sentido mostrar um case ou portfolio.
+    IMPORTANTE: Não coloque Assunto: no corpo, apenas o texto do email.
     """
     
     try:
@@ -382,7 +417,7 @@ def gerar_copy_ia(ctx):
             model="llama-3.3-70b-versatile",
         )
         msg_ia = chat_completion.choices[0].message.content
-        return "Proposta Comercial (IA)", msg_ia
+        return "Proposta de Parceria", msg_ia
     except Exception as e:
         return "Erro IA", str(e)
 
@@ -496,6 +531,7 @@ with st.sidebar:
 # --- MAIN ---
 render_header()
 df = carregar_dados(token, user_id)
+df_bot = carregar_dados_bot(token) # CARREGA OS DADOS DO BOT
 
 # --- METRICS & COTA ---
 COTA_MAXIMA = 100
@@ -503,8 +539,8 @@ envios_realizados = contar_envios_hoje(token)
 saldo_envios = COTA_MAXIMA - envios_realizados
 
 k1, k2, k3 = st.columns(3)
-k1.metric("TOTAL LEADS", len(df))
-k2.metric("COTA DIÁRIA", f"{envios_realizados}/{COTA_MAXIMA}")
+k1.metric("TOTAL LEADS (CRM)", len(df))
+k2.metric("LEADS BOT", len(df_bot))
 k3.metric("SALDO DISPARO", saldo_envios)
 
 if saldo_envios <= 0:
@@ -518,40 +554,81 @@ tab1, tab2 = st.tabs(["/// BASE DE LEADS & AÇÕES", "/// MODO SNIPER (DISPARO)"
 with tab1:
     col_left, col_right = st.columns([2, 1])
     
+    # LADO ESQUERDO: TABELAS
     with col_left:
-        st.markdown("### 📋 TABELA MESTRE")
-        edited = st.data_editor(df, num_rows="dynamic", use_container_width=True, key="editor")
-        if st.button("💾 SALVAR ALTERAÇÕES NA BASE"):
-            chg = st.session_state["editor"]
-            for idx, row in chg["edited_rows"].items():
-                try:
-                    item_id = df.iloc[int(idx)]['id']
-                    atualizar_item(token, user_id, item_id, row)
-                except: pass
-            for row in chg["added_rows"]:
-                requests.post(f"{DIRECTUS_URL}/items/{get_user_table_name(user_id)}", json=row, headers={"Authorization": f"Bearer {token}"}, verify=False)
-            st.success("DADOS SINCRONIZADOS COM SUCESSO")
-            time.sleep(1)
-            st.rerun()
+        # ABAS INTERNAS PARA ALTERNAR ENTRE MESTRE E BOT
+        sub_t1, sub_t2 = st.tabs(["📋 TABELA MESTRE", "🤖 TABELA BOT"])
+        
+        with sub_t1:
+            edited = st.data_editor(df, num_rows="dynamic", use_container_width=True, key="editor")
+            if st.button("💾 SALVAR ALTERAÇÕES NA BASE"):
+                chg = st.session_state["editor"]
+                for idx, row in chg["edited_rows"].items():
+                    try:
+                        item_id = df.iloc[int(idx)]['id']
+                        atualizar_item(token, user_id, item_id, row)
+                    except: pass
+                for row in chg["added_rows"]:
+                    requests.post(f"{DIRECTUS_URL}/items/{get_user_table_name(user_id)}", json=row, headers={"Authorization": f"Bearer {token}"}, verify=False)
+                st.success("DADOS SINCRONIZADOS COM SUCESSO")
+                time.sleep(1)
+                st.rerun()
+        
+        with sub_t2:
+            st.markdown("### DADOS CAPTURADOS (READ-ONLY)")
+            st.dataframe(df_bot, use_container_width=True, height=400)
 
+    # LADO DIREITO: AÇÕES
     with col_right:
         st.markdown("### ⚡ AÇÕES RÁPIDAS")
-        st.info("Selecione um cliente para gerar link de WhatsApp")
-        if not df.empty:
-            nomes = df['nome'].tolist() if 'nome' in df.columns else []
+        
+        # Seleção da fonte de dados
+        fonte = st.radio("Fonte:", ["Base Mestre", "Bot Automático"], horizontal=True)
+        
+        df_ativo = df if fonte == "Base Mestre" else df_bot
+        col_nome = 'nome' if fonte == "Base Mestre" else 'name'
+        
+        if not df_ativo.empty and col_nome in df_ativo.columns:
+            nomes = df_ativo[col_nome].tolist()
             sel_cli = st.selectbox("Cliente:", ["Selecione..."] + nomes)
             
             if sel_cli != "Selecione...":
-                dados_cli = df[df['nome'] == sel_cli].iloc[0]
+                dados_cli = df_ativo[df_ativo[col_nome] == sel_cli].iloc[0]
+                
+                # Campos comuns
+                nome_cliente = dados_cli.get(col_nome, '')
+                email_cliente = dados_cli.get('email', '')
                 tel = str(dados_cli.get('telefone', '')).replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
                 
-                msg_zap = st.text_area("Mensagem WhatsApp:", value=f"Olá {sel_cli}, tudo bem?")
+                # ABAS DE CANAL DE AÇÃO
+                act_w, act_e = st.tabs(["WHATSAPP", "GMAIL (IA)"])
                 
-                if tel:
-                    link_zap = f"https://wa.me/55{tel}?text={urllib.parse.quote(msg_zap)}"
-                    st.link_button("💬 ABRIR WHATSAPP", link_zap, use_container_width=True)
-                else:
-                    st.warning("Sem telefone cadastrado.")
+                with act_w:
+                    msg_zap = st.text_area("Msg WhatsApp:", value=f"Olá {nome_cliente}, tudo bem?")
+                    if tel:
+                        link_zap = f"https://wa.me/55{tel}?text={urllib.parse.quote(msg_zap)}"
+                        st.link_button("💬 ABRIR WHATSAPP", link_zap, use_container_width=True)
+                    else:
+                        st.warning("Sem telefone cadastrado.")
+                
+                with act_e:
+                    st.caption("Gera um e-mail com IA e abre no seu Gmail para editar.")
+                    if st.button("✨ GERAR E-MAIL IA"):
+                        assunto_ia, corpo_ia = gerar_copy_ia(st.session_state.get('ctx', {}))
+                        
+                        # Substitui placeholder se houver
+                        corpo_final = corpo_ia.replace("{nome}", nome_cliente)
+                        
+                        # Cria link para abrir o Gmail (Web) com os campos preenchidos
+                        # https://mail.google.com/mail/?view=cm&fs=1&to=email&su=subject&body=body
+                        
+                        assunto_safe = urllib.parse.quote(assunto_ia)
+                        corpo_safe = urllib.parse.quote(corpo_final)
+                        
+                        link_gmail = f"https://mail.google.com/mail/?view=cm&fs=1&to={email_cliente}&su={assunto_safe}&body={corpo_safe}"
+                        
+                        st.markdown(f"**Assunto:** {assunto_ia}")
+                        st.link_button("🚀 ABRIR NO GMAIL", link_gmail, use_container_width=True)
 
 # --- ABA 2: MODO SNIPER (INTERNO E EXTERNO) ---
 with tab2:
