@@ -232,36 +232,32 @@ def inicializar_crm_usuario(token, user_id):
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     
     # 1. Tabela CRM (Existente)
-    try:
-        r = requests.get(f"{base_url}/collections/{table_name}", headers=headers, verify=False)
-        if r.status_code != 200:
-            schema = {"collection": table_name, "schema": {}, "meta": {"icon": "rocket", "note": "Leanttro CRM Table"}}
-            requests.post(f"{base_url}/collections", json=schema, headers=headers, verify=False)
-            campos = [
-                {"field": "nome", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "person"}},
-                {"field": "empresa", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "domain"}},
-                {"field": "email", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "email"}},
-                {"field": "telefone", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "phone"}},
-                {"field": "status", "type": "string", "meta": {"interface": "select-dropdown", "options": {"choices": [{"text": "NOVO", "value": "Novo"}, {"text": "QUENTE", "value": "Quente"}, {"text": "CLIENTE", "value": "Cliente"}]}}},
-                {"field": "obs", "type": "text", "meta": {"interface": "input-multiline"}}
-            ]
-            for campo in campos: requests.post(f"{base_url}/fields/{table_name}", json=campo, headers=headers, verify=False)
-    except: pass
+    r = requests.get(f"{base_url}/collections/{table_name}", headers=headers, verify=False)
+    if r.status_code != 200:
+        schema = {"collection": table_name, "schema": {}, "meta": {"icon": "rocket", "note": "Leanttro CRM Table"}}
+        requests.post(f"{base_url}/collections", json=schema, headers=headers, verify=False)
+        campos = [
+            {"field": "nome", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "person"}},
+            {"field": "empresa", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "domain"}},
+            {"field": "email", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "email"}},
+            {"field": "telefone", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "phone"}},
+            {"field": "status", "type": "string", "meta": {"interface": "select-dropdown", "options": {"choices": [{"text": "NOVO", "value": "Novo"}, {"text": "QUENTE", "value": "Quente"}, {"text": "CLIENTE", "value": "Cliente"}]}}},
+            {"field": "obs", "type": "text", "meta": {"interface": "input-multiline"}}
+        ]
+        for campo in campos: requests.post(f"{base_url}/fields/{table_name}", json=campo, headers=headers, verify=False)
 
     # 2. Tabela SMTP
-    try:
-        r_smtp = requests.get(f"{base_url}/collections/config_smtp", headers=headers, verify=False)
-        if r_smtp.status_code != 200:
-            schema_smtp = {"collection": "config_smtp", "schema": {}, "meta": {"icon": "email", "note": "SMTP Users Config"}}
-            requests.post(f"{base_url}/collections", json=schema_smtp, headers=headers, verify=False)
-            campos_smtp = [
-                {"field": "smtp_host", "type": "string"},
-                {"field": "smtp_port", "type": "integer"},
-                {"field": "smtp_user", "type": "string"},
-                {"field": "smtp_pass", "type": "string"}
-            ]
-            for c in campos_smtp: requests.post(f"{base_url}/fields/config_smtp", json=c, headers=headers, verify=False)
-    except: pass
+    r_smtp = requests.get(f"{base_url}/collections/config_smtp", headers=headers, verify=False)
+    if r_smtp.status_code != 200:
+        schema_smtp = {"collection": "config_smtp", "schema": {}, "meta": {"icon": "email", "note": "SMTP Users Config"}}
+        requests.post(f"{base_url}/collections", json=schema_smtp, headers=headers, verify=False)
+        campos_smtp = [
+            {"field": "smtp_host", "type": "string"},
+            {"field": "smtp_port", "type": "integer"},
+            {"field": "smtp_user", "type": "string"},
+            {"field": "smtp_pass", "type": "string"}
+        ]
+        for c in campos_smtp: requests.post(f"{base_url}/fields/config_smtp", json=c, headers=headers, verify=False)
         
     return True, "CRM Initialized"
 
@@ -504,29 +500,26 @@ user_id = user['id']
 
 st.query_params["token"] = token
 
-# --- FIX: INICIALIZAÇÃO E CARREGAMENTO IMEDIATO DO SMTP ---
-# Verifica se já carregamos a config do banco nesta sessão
-if 'smtp_loaded' not in st.session_state:
+if 'setup_ok' not in st.session_state:
     inicializar_crm_usuario(token, user_id)
-    
+    st.session_state['setup_ok'] = True
+
+# --- FIX: FORÇA CARREGAMENTO DO SMTP SEMPRE QUE RECARREGA A PÁGINA ---
+# Se os dados não estiverem na sessão, busca do banco e popula os inputs
+if 'smtp' not in st.session_state or 'smtp_host_input' not in st.session_state:
     cfg = carregar_config_smtp(token)
     if cfg:
-        # Popula o dicionário LÓGICO (usado pelo botão de envio)
         st.session_state['smtp'] = {
             'host': cfg.get('smtp_host', 'smtp.gmail.com'),
-            'port': int(cfg.get('smtp_port', 587)),
+            'port': cfg.get('smtp_port', 587),
             'user': cfg.get('smtp_user', ''),
             'pass': cfg.get('smtp_pass', '')
         }
-        # Popula os INPUTS VISUAIS (usado pela Sidebar)
-        # O Streamlit busca essas chaves ao renderizar o widget se elas existirem no session_state
+        # Popula as chaves específicas dos widgets
         st.session_state['smtp_host_input'] = cfg.get('smtp_host', 'smtp.gmail.com')
         st.session_state['smtp_port_input'] = int(cfg.get('smtp_port', 587))
         st.session_state['smtp_user_input'] = cfg.get('smtp_user', '')
         st.session_state['smtp_pass_input'] = cfg.get('smtp_pass', '')
-    
-    st.session_state['smtp_loaded'] = True
-    st.session_state['setup_ok'] = True
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -556,16 +549,16 @@ with st.sidebar:
             st.success("SALVO")
 
     with st.expander("📧 SMTP CONFIG", expanded=True):
-        # Os inputs agora estão vinculados às chaves populadas no 'smtp_loaded'
-        h = st.text_input("HOST", key="smtp_host_input")
-        p = st.number_input("PORT", key="smtp_port_input")
-        u = st.text_input("USER", key="smtp_user_input")
-        pw = st.text_input("PASS", type="password", key="smtp_pass_input")
+        saved = st.session_state.get('smtp', {})
+        # Usando keys persistentes populadas no load
+        h = st.text_input("HOST", value=saved.get('host', "smtp.gmail.com"), key="smtp_host_input")
+        p = st.number_input("PORT", value=int(saved.get('port', 587)), key="smtp_port_input")
+        u = st.text_input("USER", value=saved.get('user', ""), key="smtp_user_input")
+        pw = st.text_input("PASS", value=saved.get('pass', ""), type="password", key="smtp_pass_input")
         
         if st.button("SALVAR E CONECTAR"):
-            # Atualiza o dicionário lógico
             st.session_state['smtp'] = {'host': h, 'port': p, 'user': u, 'pass': pw}
-            # Salva no banco
+            # Atualiza também o banco
             salvar_config_smtp(token, {'smtp_host': h, 'smtp_port': p, 'smtp_user': u, 'smtp_pass': pw})
             st.toast("Configurações salvas e conectadas!", icon="✅")
             time.sleep(1)
@@ -802,7 +795,6 @@ with tab2:
                 st.code(sug_c)
 
         if st.button("🚀 DISPARAR NA BASE"):
-            # CHECKAGEM CRÍTICA: Verifica se SMTP está no session_state
             if not st.session_state.get('smtp'):
                 st.error("CONFIGURE O SMTP NA SIDEBAR")
             elif len(sels) > saldo_envios:
