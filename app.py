@@ -312,10 +312,11 @@ def atualizar_item(token, user_id, item_id, dados):
     table = get_user_table_name(user_id)
     requests.patch(f"{DIRECTUS_URL}/items/{table}/{item_id}", json=dados, headers={"Authorization": f"Bearer {token}"}, verify=False)
 
-# --- FUNÇÕES SMTP (NOVO) ---
+# --- FUNÇÕES SMTP (PERSISTÊNCIA) ---
 def carregar_config_smtp(token):
     try:
         base_url = DIRECTUS_URL.rstrip('/')
+        # Filtra pelo usuário logado
         r = requests.get(f"{base_url}/items/config_smtp?filter[user_created][_eq]=$CURRENT_USER&limit=1", headers={"Authorization": f"Bearer {token}"}, verify=False)
         if r.status_code == 200:
             data = r.json()['data']
@@ -360,7 +361,6 @@ def registrar_log_envio(token, destinatario, assunto, status):
 
 def enviar_email_smtp(smtp_config, to, subject, body, anexo=None):
     try:
-        # Verifica se vamos fazer inserção de IMAGEM INLINE
         usar_imagem_inline = False
         if anexo is not None and "{{imagem}}" in body.lower():
             if "image" in anexo.type:
@@ -535,17 +535,21 @@ with st.sidebar:
             st.session_state['ctx'] = {'empresa': en, 'descricao': ed}
             st.success("SALVO")
 
-    with st.expander("📧 SMTP CONFIG"):
+    with st.expander("📧 SMTP CONFIG", expanded=True): # Expandido para facilitar
+        # Carrega dados do state ou vazio. Se state estiver vazio mas banco tiver, inicializa.
         saved = st.session_state.get('smtp', {})
-        h = st.text_input("HOST", value=saved.get('host', "smtp.gmail.com"))
-        p = st.number_input("PORT", value=int(saved.get('port', 587)))
-        u = st.text_input("USER", value=saved.get('user', ""))
-        pw = st.text_input("PASS", value=saved.get('pass', ""), type="password")
+        
+        # Inputs agora usam key para persistir no session_state automaticamente
+        h = st.text_input("HOST", value=saved.get('host', "smtp.gmail.com"), key="smtp_host_input")
+        p = st.number_input("PORT", value=int(saved.get('port', 587)), key="smtp_port_input")
+        u = st.text_input("USER", value=saved.get('user', ""), key="smtp_user_input")
+        pw = st.text_input("PASS", value=saved.get('pass', ""), type="password", key="smtp_pass_input")
         
         if st.button("SALVAR E CONECTAR"):
             st.session_state['smtp'] = {'host': h, 'port': p, 'user': u, 'pass': pw}
             salvar_config_smtp(token, {'smtp_host': h, 'smtp_port': p, 'smtp_user': u, 'smtp_pass': pw})
-            st.success("SALVO E CONECTADO")
+            st.toast("Configurações salvas e conectadas!", icon="✅")
+            time.sleep(1)
 
 # --- MAIN ---
 render_header()
@@ -571,42 +575,77 @@ tab1, tab2 = st.tabs(["/// BASE DE LEADS & AÇÕES", "/// MODO SNIPER (DISPARO)"
 
 # --- ABA 1: BASE + WHATSAPP ---
 with tab1:
-    # 1. ÁREA DE FILTROS (NOVA SOLICITAÇÃO)
-    with st.expander("🔎 FILTRAR DADOS DA TABELA", expanded=True):
-        col_cols, col_val = st.columns([1, 3])
-        with col_cols:
-            colunas_disponiveis = ["(Mostrar Tudo)"] + list(df.columns)
-            filtro_coluna = st.selectbox("Filtrar pela Coluna:", colunas_disponiveis)
-        with col_val:
-            filtro_valor = st.text_input("Valor para buscar:", disabled=(filtro_coluna == "(Mostrar Tudo)"))
-    
-    # Aplica o filtro visualmente, mas mantém 'df' original para lógica de index
-    df_visual = df.copy()
-    if filtro_coluna != "(Mostrar Tudo)" and filtro_valor:
-        # Filtra convertendo para string para facilitar busca geral
-        df_visual = df_visual[df_visual[filtro_coluna].astype(str).str.contains(filtro_valor, case=False, na=False)]
+    # 1. ÁREA DE FILTROS & COLUNAS (NOVA LÓGICA SOLICITADA)
+    with st.expander("🔎 FILTRAR & PERSONALIZAR TABELA", expanded=True):
+        f_c1, f_c2 = st.columns([1, 1])
+        
+        with f_c1:
+            st.markdown("##### 👁️ COLUNAS VISÍVEIS")
+            all_cols = list(df.columns)
+            # Default: todas as colunas visíveis inicialmente
+            cols_visiveis = st.multiselect("Escolha o que ver:", all_cols, default=all_cols)
+        
+        with f_c2:
+            st.markdown("##### 🌪️ FILTRAR DADOS")
+            # 1. Escolhe a coluna para filtrar
+            col_para_filtrar = st.selectbox("Filtrar na coluna:", ["(Sem Filtro)"] + all_cols)
+            
+            # 2. Se escolheu coluna, mostra Multiselect com valores únicos dessa coluna
+            filtro_valores = []
+            if col_para_filtrar != "(Sem Filtro)":
+                valores_unicos = df[col_para_filtrar].unique().tolist()
+                valores_unicos = [str(x) for x in valores_unicos] # Garante string
+                filtro_valores = st.multiselect(f"Selecione valores de '{col_para_filtrar}':", valores_unicos)
 
-    # 2. ÁREA DA TABELA (FULL WIDTH AGORA)
+    # Aplica o filtro visualmente
+    df_visual = df.copy()
+    
+    # Lógica de Filtro Multiselect
+    if col_para_filtrar != "(Sem Filtro)" and filtro_valores:
+        # Filtra onde o valor da coluna está DENTRO da lista selecionada
+        df_visual = df_visual[df_visual[col_para_filtrar].astype(str).isin(filtro_valores)]
+
+    # Filtra colunas visíveis
+    if cols_visiveis:
+        # Mantém 'id' escondido mas necessário para update, mas o data_editor lida bem se passarmos tudo
+        # Vamos passar apenas o que o usuário quer ver para edição, mas precisamos garantir que o ID exista internamente
+        cols_final = [c for c in cols_visiveis]
+        if 'id' not in cols_final and 'id' in df_visual.columns:
+            cols_final.append('id') # Garante ID para lógica de salvamento
+        df_visual = df_visual[cols_final]
+
+    # 2. ÁREA DA TABELA (FULL WIDTH)
     sub_t1, sub_t2 = st.tabs(["📋 TABELA MESTRE", "🤖 TABELA BOT"])
     
     with sub_t1:
-        # Tabela ocupando a largura total (sem colunas dividindo a tela)
-        edited = st.data_editor(df_visual, num_rows="dynamic", use_container_width=True, key="editor")
+        # Configuração das colunas para esconder o ID se o usuário não selecionou, mas ele estar lá
+        col_config = {}
+        if 'id' in df_visual.columns and 'id' not in cols_visiveis:
+             col_config['id'] = st.column_config.Column("id", disabled=True, hidden=True)
+
+        edited = st.data_editor(
+            df_visual, 
+            num_rows="dynamic", 
+            use_container_width=True, 
+            key="editor",
+            column_config=col_config
+        )
         
         if st.button("💾 SALVAR ALTERAÇÕES NA BASE"):
             chg = st.session_state["editor"]
             
-            # Lógica de Edição (Usa .loc para garantir ID correto mesmo com filtro)
+            # Lógica de Edição
             for idx, row in chg["edited_rows"].items():
                 try:
-                    # Se houve filtro, o idx refere-se ao índice original do DF se não resetamos
-                    # Usamos .loc para pegar pelo Label do índice
+                    # Recupera o ID real usando o índice do DF filtrado
+                    # (Como edited_rows usa o índice posicional do df mostrado)
+                    # Nota: O st.data_editor retorna indices baseados no DF original se não for resetado o index.
+                    # Por segurança, usamos o ID da linha se disponível
                     item_id = df.loc[int(idx)]['id']
                     atualizar_item(token, user_id, item_id, row)
                 except: pass
             
-            # Lógica de Adição com AUTO-ID (NOVA SOLICITAÇÃO)
-            # Calcula o próximo ID baseado no máximo atual da tabela completa
+            # Lógica de Adição com AUTO-ID
             max_id = 0
             if not df.empty and 'id' in df.columns:
                 try:
@@ -617,14 +656,13 @@ with tab1:
             proximo_id = int(max_id) + 1
 
             for row in chg["added_rows"]:
-                # Se o usuário não digitou ID, preenchemos automático
                 if 'id' not in row or not row['id']:
                     row['id'] = proximo_id
-                    proximo_id += 1 # Incrementa para o próximo caso tenha adicionado várias linhas
+                    proximo_id += 1
                 
                 requests.post(f"{DIRECTUS_URL}/items/{get_user_table_name(user_id)}", json=row, headers={"Authorization": f"Bearer {token}"}, verify=False)
             
-            st.success("DADOS SINCRONIZADOS COM SUCESSO")
+            st.toast("Dados sincronizados com sucesso!", icon="✅")
             time.sleep(1)
             st.rerun()
     
@@ -634,10 +672,9 @@ with tab1:
 
     st.divider()
 
-    # 3. ÁREA DE AÇÕES (REPOSICIONADA PARA BAIXO DA TABELA)
+    # 3. ÁREA DE AÇÕES
     st.markdown("### ⚡ AÇÕES RÁPIDAS (LINHA ÚNICA)")
     
-    # Seleção da fonte de dados
     col_fonte, col_cli, col_vazio = st.columns([1, 2, 3])
     with col_fonte:
         fonte = st.radio("Fonte de Dados:", ["Base Mestre", "Bot Automático"], horizontal=True)
@@ -654,7 +691,6 @@ with tab1:
     if sel_cli != "Selecione..." and not df_ativo.empty:
         dados_cli = df_ativo[df_ativo[col_nome] == sel_cli].iloc[0]
         
-        # Campos comuns
         nome_cliente = dados_cli.get(col_nome, '')
         email_cliente = dados_cli.get('email', '')
         tel = str(dados_cli.get('telefone', '')).replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
@@ -663,7 +699,6 @@ with tab1:
         if 'dor_principal' in dados_cli:
             st.info(f"💡 Dor Identificada: {dados_cli['dor_principal']}")
 
-        # Ações lado a lado
         act_c1, act_c2 = st.columns(2)
         
         with act_c1:
@@ -697,7 +732,6 @@ with tab2:
 
     subtab_int, subtab_ext = st.tabs(["[ 1 ] DISPARO INTERNO", "[ 2 ] IMPORTAR EXCEL"])
 
-    # --- DISPARO INTERNO (BASE MESTRE + BOT) ---
     with subtab_int:
         c1, c2 = st.columns([1, 1])
         
@@ -766,7 +800,6 @@ with tab2:
                 time.sleep(2)
                 st.rerun()
 
-    # --- DISPARO EXTERNO (EXCEL) ---
     with subtab_ext:
         st.markdown("### 📂 UPLOAD DE LISTA (EXCEL .xlsx)")
         up_file = st.file_uploader("ARQUIVO EXCEL (Colunas: nome, email)", type=["xlsx"])
