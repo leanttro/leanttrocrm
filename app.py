@@ -502,7 +502,11 @@ st.query_params["token"] = token
 
 if 'setup_ok' not in st.session_state:
     inicializar_crm_usuario(token, user_id)
-    # CARREGA SMTP SALVO AO INICIAR
+    st.session_state['setup_ok'] = True
+
+# --- FIX: FORÇA CARREGAMENTO DO SMTP SEMPRE QUE RECARREGA A PÁGINA ---
+# Se os dados não estiverem na sessão, busca do banco e popula os inputs
+if 'smtp' not in st.session_state or 'smtp_host_input' not in st.session_state:
     cfg = carregar_config_smtp(token)
     if cfg:
         st.session_state['smtp'] = {
@@ -511,13 +515,11 @@ if 'setup_ok' not in st.session_state:
             'user': cfg.get('smtp_user', ''),
             'pass': cfg.get('smtp_pass', '')
         }
-        # --- FIX: FORÇA O VALOR NOS INPUTS (POPULA AS CHAVES) ---
+        # Popula as chaves específicas dos widgets
         st.session_state['smtp_host_input'] = cfg.get('smtp_host', 'smtp.gmail.com')
         st.session_state['smtp_port_input'] = int(cfg.get('smtp_port', 587))
         st.session_state['smtp_user_input'] = cfg.get('smtp_user', '')
         st.session_state['smtp_pass_input'] = cfg.get('smtp_pass', '')
-        # ---------------------------------------------------------
-    st.session_state['setup_ok'] = True
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -548,6 +550,7 @@ with st.sidebar:
 
     with st.expander("📧 SMTP CONFIG", expanded=True):
         saved = st.session_state.get('smtp', {})
+        # Usando keys persistentes populadas no load
         h = st.text_input("HOST", value=saved.get('host', "smtp.gmail.com"), key="smtp_host_input")
         p = st.number_input("PORT", value=int(saved.get('port', 587)), key="smtp_port_input")
         u = st.text_input("USER", value=saved.get('user', ""), key="smtp_user_input")
@@ -555,6 +558,7 @@ with st.sidebar:
         
         if st.button("SALVAR E CONECTAR"):
             st.session_state['smtp'] = {'host': h, 'port': p, 'user': u, 'pass': pw}
+            # Atualiza também o banco
             salvar_config_smtp(token, {'smtp_host': h, 'smtp_port': p, 'smtp_user': u, 'smtp_pass': pw})
             st.toast("Configurações salvas e conectadas!", icon="✅")
             time.sleep(1)
