@@ -408,7 +408,7 @@ def gerar_copy_ia(ctx, dados_cliente=None):
     
     empresa = ctx.get('empresa', 'Nossa Empresa')
     descricao = ctx.get('descricao', 'Soluções Digitais')
-    segmento_alvo = ctx.get('segmento_alvo', '') # Contexto extra de filtro
+    segmento_alvo = ctx.get('segmento_alvo', '') 
     
     dor_cliente = ""
     if dados_cliente is not None and 'dor_principal' in dados_cliente:
@@ -416,7 +416,6 @@ def gerar_copy_ia(ctx, dados_cliente=None):
         if d and str(d).lower() != 'none':
             dor_cliente = f"A principal dor/necessidade deste cliente é: {d}. Use isso para personalizar o texto."
     
-    # Se houver um segmento alvo (filtro do sniper), instrui a IA
     instrucao_segmento = ""
     if segmento_alvo:
         instrucao_segmento = f"CONTEXTO IMPORTANTE: O público alvo deste disparo são empresas/pessoas do seguinte perfil/segmento: '{segmento_alvo}'. Adapte a linguagem e exemplos para eles."
@@ -512,6 +511,12 @@ if 'setup_ok' not in st.session_state:
             'user': cfg.get('smtp_user', ''),
             'pass': cfg.get('smtp_pass', '')
         }
+        # --- FIX: FORÇA O VALOR NOS INPUTS (POPULA AS CHAVES) ---
+        st.session_state['smtp_host_input'] = cfg.get('smtp_host', 'smtp.gmail.com')
+        st.session_state['smtp_port_input'] = int(cfg.get('smtp_port', 587))
+        st.session_state['smtp_user_input'] = cfg.get('smtp_user', '')
+        st.session_state['smtp_pass_input'] = cfg.get('smtp_pass', '')
+        # ---------------------------------------------------------
     st.session_state['setup_ok'] = True
 
 # --- SIDEBAR ---
@@ -736,11 +741,10 @@ with tab2:
         df_unificado = pd.concat([lista_mestre, lista_bot_u], ignore_index=True)
         df_unificado = df_unificado[df_unificado['email'].str.contains("@", na=False)]
         
-        # 2. FILTRAGEM INTELIGENTE (NOVO RECURSO SOLICITADO)
+        # 2. FILTRAGEM INTELIGENTE
         with st.expander("🎯 FILTRAGEM INTELIGENTE (SEGMENTAÇÃO)", expanded=True):
             f_s1, f_s2 = st.columns([1, 2])
             with f_s1:
-                # Permite escolher qualquer coluna do DF unificado para filtrar (ex: ramo)
                 col_sniper = st.selectbox("Filtrar por:", ["(Todos)"] + list(df_unificado.columns), key="col_sniper")
             with f_s2:
                 vals_sniper = []
@@ -765,7 +769,6 @@ with tab2:
         with c1:
             st.markdown("### SELEÇÃO (FILTRADA)")
             opcoes = df_unificado['label'].tolist() if not df_unificado.empty else []
-            # O multiselect agora mostra apenas os resultados do filtro acima
             sels = st.multiselect("ALVOS", opcoes)
             if len(sels) > 0:
                 st.info(f"{len(sels)} alvos selecionados.")
