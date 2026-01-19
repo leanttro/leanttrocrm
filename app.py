@@ -316,7 +316,6 @@ def atualizar_item(token, user_id, item_id, dados):
 def carregar_config_smtp(token):
     try:
         base_url = DIRECTUS_URL.rstrip('/')
-        # Filtra pelo usuário logado
         r = requests.get(f"{base_url}/items/config_smtp?filter[user_created][_eq]=$CURRENT_USER&limit=1", headers={"Authorization": f"Bearer {token}"}, verify=False)
         if r.status_code == 200:
             data = r.json()['data']
@@ -409,18 +408,25 @@ def gerar_copy_ia(ctx, dados_cliente=None):
     
     empresa = ctx.get('empresa', 'Nossa Empresa')
     descricao = ctx.get('descricao', 'Soluções Digitais')
+    segmento_alvo = ctx.get('segmento_alvo', '') # Contexto extra de filtro
     
     dor_cliente = ""
     if dados_cliente is not None and 'dor_principal' in dados_cliente:
         d = dados_cliente['dor_principal']
         if d and str(d).lower() != 'none':
             dor_cliente = f"A principal dor/necessidade deste cliente é: {d}. Use isso para personalizar o texto."
+    
+    # Se houver um segmento alvo (filtro do sniper), instrui a IA
+    instrucao_segmento = ""
+    if segmento_alvo:
+        instrucao_segmento = f"CONTEXTO IMPORTANTE: O público alvo deste disparo são empresas/pessoas do seguinte perfil/segmento: '{segmento_alvo}'. Adapte a linguagem e exemplos para eles."
 
     prompt = f"""
     Aja como um copywriter profissional B2B.
     Escreva um email curto (max 3 parágrafos) de prospecção fria.
     Minha Empresa: {empresa}
     O que vendemos: {descricao}
+    {instrucao_segmento}
     {dor_cliente}
     Tom: Persuasivo, direto e sem enrolação corporativa.
     Foco: Marcar uma reunião ou resolver o problema dele.
@@ -535,11 +541,8 @@ with st.sidebar:
             st.session_state['ctx'] = {'empresa': en, 'descricao': ed}
             st.success("SALVO")
 
-    with st.expander("📧 SMTP CONFIG", expanded=True): # Expandido para facilitar
-        # Carrega dados do state ou vazio. Se state estiver vazio mas banco tiver, inicializa.
+    with st.expander("📧 SMTP CONFIG", expanded=True):
         saved = st.session_state.get('smtp', {})
-        
-        # Inputs agora usam key para persistir no session_state automaticamente
         h = st.text_input("HOST", value=saved.get('host', "smtp.gmail.com"), key="smtp_host_input")
         p = st.number_input("PORT", value=int(saved.get('port', 587)), key="smtp_port_input")
         u = st.text_input("USER", value=saved.get('user', ""), key="smtp_user_input")
@@ -575,50 +578,41 @@ tab1, tab2 = st.tabs(["/// BASE DE LEADS & AÇÕES", "/// MODO SNIPER (DISPARO)"
 
 # --- ABA 1: BASE + WHATSAPP ---
 with tab1:
-    # 1. ÁREA DE FILTROS & COLUNAS (NOVA LÓGICA SOLICITADA)
+    # 1. ÁREA DE FILTROS & COLUNAS
     with st.expander("🔎 FILTRAR & PERSONALIZAR TABELA", expanded=True):
         f_c1, f_c2 = st.columns([1, 1])
         
         with f_c1:
             st.markdown("##### 👁️ COLUNAS VISÍVEIS")
             all_cols = list(df.columns)
-            # Default: todas as colunas visíveis inicialmente
             cols_visiveis = st.multiselect("Escolha o que ver:", all_cols, default=all_cols)
         
         with f_c2:
             st.markdown("##### 🌪️ FILTRAR DADOS")
-            # 1. Escolhe a coluna para filtrar
             col_para_filtrar = st.selectbox("Filtrar na coluna:", ["(Sem Filtro)"] + all_cols)
             
-            # 2. Se escolheu coluna, mostra Multiselect com valores únicos dessa coluna
             filtro_valores = []
             if col_para_filtrar != "(Sem Filtro)":
                 valores_unicos = df[col_para_filtrar].unique().tolist()
-                valores_unicos = [str(x) for x in valores_unicos] # Garante string
+                valores_unicos = [str(x) for x in valores_unicos] 
                 filtro_valores = st.multiselect(f"Selecione valores de '{col_para_filtrar}':", valores_unicos)
 
     # Aplica o filtro visualmente
     df_visual = df.copy()
     
-    # Lógica de Filtro Multiselect
     if col_para_filtrar != "(Sem Filtro)" and filtro_valores:
-        # Filtra onde o valor da coluna está DENTRO da lista selecionada
         df_visual = df_visual[df_visual[col_para_filtrar].astype(str).isin(filtro_valores)]
 
-    # Filtra colunas visíveis
     if cols_visiveis:
-        # Mantém 'id' escondido mas necessário para update, mas o data_editor lida bem se passarmos tudo
-        # Vamos passar apenas o que o usuário quer ver para edição, mas precisamos garantir que o ID exista internamente
         cols_final = [c for c in cols_visiveis]
         if 'id' not in cols_final and 'id' in df_visual.columns:
-            cols_final.append('id') # Garante ID para lógica de salvamento
+            cols_final.append('id')
         df_visual = df_visual[cols_final]
 
     # 2. ÁREA DA TABELA (FULL WIDTH)
     sub_t1, sub_t2 = st.tabs(["📋 TABELA MESTRE", "🤖 TABELA BOT"])
     
     with sub_t1:
-        # Configuração das colunas para esconder o ID se o usuário não selecionou, mas ele estar lá
         col_config = {}
         if 'id' in df_visual.columns and 'id' not in cols_visiveis:
              col_config['id'] = st.column_config.Column("id", disabled=True, hidden=True)
@@ -634,18 +628,12 @@ with tab1:
         if st.button("💾 SALVAR ALTERAÇÕES NA BASE"):
             chg = st.session_state["editor"]
             
-            # Lógica de Edição
             for idx, row in chg["edited_rows"].items():
                 try:
-                    # Recupera o ID real usando o índice do DF filtrado
-                    # (Como edited_rows usa o índice posicional do df mostrado)
-                    # Nota: O st.data_editor retorna indices baseados no DF original se não for resetado o index.
-                    # Por segurança, usamos o ID da linha se disponível
                     item_id = df.loc[int(idx)]['id']
                     atualizar_item(token, user_id, item_id, row)
                 except: pass
             
-            # Lógica de Adição com AUTO-ID
             max_id = 0
             if not df.empty and 'id' in df.columns:
                 try:
@@ -733,29 +721,54 @@ with tab2:
     subtab_int, subtab_ext = st.tabs(["[ 1 ] DISPARO INTERNO", "[ 2 ] IMPORTAR EXCEL"])
 
     with subtab_int:
-        c1, c2 = st.columns([1, 1])
-        
+        # 1. PREPARAÇÃO DA BASE UNIFICADA
         lista_mestre = pd.DataFrame()
         lista_bot_u = pd.DataFrame()
 
         if not df.empty and 'email' in df.columns:
-            lista_mestre = df[['nome', 'email']].copy()
+            lista_mestre = df.copy()
             lista_mestre['origem'] = 'Mestre'
         
         if not df_bot.empty and 'email' in df_bot.columns:
-            lista_bot_u = df_bot[['nome', 'email']].copy()
+            lista_bot_u = df_bot.copy()
             lista_bot_u['origem'] = 'Bot'
 
         df_unificado = pd.concat([lista_mestre, lista_bot_u], ignore_index=True)
         df_unificado = df_unificado[df_unificado['email'].str.contains("@", na=False)]
         
+        # 2. FILTRAGEM INTELIGENTE (NOVO RECURSO SOLICITADO)
+        with st.expander("🎯 FILTRAGEM INTELIGENTE (SEGMENTAÇÃO)", expanded=True):
+            f_s1, f_s2 = st.columns([1, 2])
+            with f_s1:
+                # Permite escolher qualquer coluna do DF unificado para filtrar (ex: ramo)
+                col_sniper = st.selectbox("Filtrar por:", ["(Todos)"] + list(df_unificado.columns), key="col_sniper")
+            with f_s2:
+                vals_sniper = []
+                if col_sniper != "(Todos)":
+                    unique_vals = [str(x) for x in df_unificado[col_sniper].unique()]
+                    vals_sniper = st.multiselect(f"Valores em '{col_sniper}':", unique_vals, key="vals_sniper")
+        
+        # APLICA FILTRO
+        if col_sniper != "(Todos)" and vals_sniper:
+            df_unificado = df_unificado[df_unificado[col_sniper].astype(str).isin(vals_sniper)]
+
+        # CRIA LABELS APÓS FILTRO
         if not df_unificado.empty:
-            df_unificado['label'] = df_unificado['nome'] + " (" + df_unificado['origem'] + ")"
+            if 'nome' in df_unificado.columns:
+                df_unificado['label'] = df_unificado['nome'] + " (" + df_unificado['origem'] + ")"
+            else:
+                df_unificado['label'] = df_unificado['email']
+
+        # 3. INTERFACE DE DISPARO
+        c1, c2 = st.columns([1, 1])
         
         with c1:
-            st.markdown("### SELEÇÃO (MESTRE + BOT)")
+            st.markdown("### SELEÇÃO (FILTRADA)")
             opcoes = df_unificado['label'].tolist() if not df_unificado.empty else []
+            # O multiselect agora mostra apenas os resultados do filtro acima
             sels = st.multiselect("ALVOS", opcoes)
+            if len(sels) > 0:
+                st.info(f"{len(sels)} alvos selecionados.")
             
         with c2:
             st.markdown("### MENSAGEM")
@@ -765,7 +778,12 @@ with tab2:
             file_anexo = st.file_uploader("ANEXAR ARQUIVO (IMG vira inline, PDF vira anexo)", key="file_int")
             
             if st.button("✨ GERAR COM IA (GROQ)"):
-                sug_a, sug_c = gerar_copy_ia(st.session_state.get('ctx', {}))
+                # Captura contexto do filtro para a IA
+                ctx_temp = st.session_state.get('ctx', {}).copy()
+                if col_sniper != "(Todos)" and vals_sniper:
+                    ctx_temp['segmento_alvo'] = f"{', '.join(vals_sniper)} ({col_sniper})"
+                
+                sug_a, sug_c = gerar_copy_ia(ctx_temp)
                 st.info(f"Assunto: {sug_a}")
                 st.code(sug_c)
 
@@ -784,7 +802,7 @@ with tab2:
                         time.sleep(wait)
                     
                     tgt = df_unificado[df_unificado['label'] == label_sel].iloc[0]
-                    nome_real = tgt['nome']
+                    nome_real = tgt.get('nome', 'Parceiro')
                     email_real = tgt['email']
                     
                     msg_final = corpo.replace("{nome}", nome_real)
