@@ -321,10 +321,11 @@ def atualizar_item(token, user_id, item_id, dados):
     table = get_user_table_name(user_id)
     requests.patch(f"{DIRECTUS_URL}/items/{table}/{item_id}", json=dados, headers={"Authorization": f"Bearer {token}"}, verify=False)
 
-# --- FUNÇÕES SMTP (PERSISTÊNCIA) ---
+# --- FUNÇÕES SMTP (PERSISTÊNCIA CORRIGIDA) ---
 def carregar_config_smtp(token):
     try:
         base_url = DIRECTUS_URL.rstrip('/')
+        # Busca a configuração criada pelo usuário atual (user_created = $CURRENT_USER)
         r = requests.get(f"{base_url}/items/config_smtp?filter[user_created][_eq]=$CURRENT_USER&limit=1", headers={"Authorization": f"Bearer {token}"}, verify=False)
         if r.status_code == 200:
             data = r.json()['data']
@@ -369,9 +370,23 @@ def registrar_log_envio(token, destinatario, assunto, status):
 
 def enviar_email_smtp(smtp_config, to, subject, body, anexo=None):
     try:
-        # CORREÇÃO DE SEGURANÇA: GARANTIR QUE SÃO STRINGS
-        to = str(to).strip()
-        subject = str(subject).strip()
+        # --- CORREÇÃO DE SEGURANÇA: CONVERSÃO DE TIPOS ESTRITA ---
+        # 1. Garante que a porta é um INTEIRO
+        try:
+            porta_safe = int(float(smtp_config['port']))
+        except:
+            return False, "Porta SMTP inválida (deve ser número inteiro)"
+            
+        # 2. Garante que os campos de texto sejam STRINGS limpas
+        to_safe = str(to).strip()
+        subject_safe = str(subject).strip()
+        host_safe = str(smtp_config['host']).strip()
+        user_safe = str(smtp_config['user']).strip()
+        pass_safe = str(smtp_config['pass']).strip()
+
+        # Validação simples
+        if not to_safe or "@" not in to_safe:
+            return False, "Email destinatário inválido"
 
         usar_imagem_inline = False
         if anexo is not None and "{{imagem}}" in body.lower():
@@ -380,9 +395,9 @@ def enviar_email_smtp(smtp_config, to, subject, body, anexo=None):
 
         if usar_imagem_inline:
             msg = MIMEMultipart('related')
-            msg['From'] = smtp_config['user']
-            msg['To'] = to
-            msg['Subject'] = subject
+            msg['From'] = user_safe
+            msg['To'] = to_safe
+            msg['Subject'] = subject_safe
             msg_alternative = MIMEMultipart('alternative')
             msg.attach(msg_alternative)
 
@@ -397,9 +412,9 @@ def enviar_email_smtp(smtp_config, to, subject, body, anexo=None):
             msg.attach(image)
         else:
             msg = MIMEMultipart()
-            msg['From'] = smtp_config['user']
-            msg['To'] = to
-            msg['Subject'] = subject
+            msg['From'] = user_safe
+            msg['To'] = to_safe
+            msg['Subject'] = subject_safe
             msg.attach(MIMEText(body, 'html'))
             if anexo is not None:
                 part = MIMEBase('application', 'octet-stream')
@@ -408,10 +423,10 @@ def enviar_email_smtp(smtp_config, to, subject, body, anexo=None):
                 part.add_header('Content-Disposition', f'attachment; filename="{anexo.name}"')
                 msg.attach(part)
 
-        server = smtplib.SMTP(smtp_config['host'], int(smtp_config['port'])) # Força INT na porta
+        server = smtplib.SMTP(host_safe, porta_safe)
         server.starttls()
-        server.login(smtp_config['user'], smtp_config['pass'])
-        server.sendmail(smtp_config['user'], to, msg.as_string())
+        server.login(user_safe, pass_safe)
+        server.sendmail(user_safe, to_safe, msg.as_string())
         server.quit()
         return True, "OK"
     except Exception as e: return False, str(e)
@@ -517,21 +532,34 @@ if 'setup_ok' not in st.session_state:
     inicializar_crm_usuario(token, user_id)
     st.session_state['setup_ok'] = True
 
-# --- FIX: FORÇA CARREGAMENTO DO SMTP SEMPRE E POPULA KEYS DO WIDGET ---
+# --- FIX CRUCIAL: CARREGAR SMTP DO BANCO PARA OS WIDGETS ANTES DA RENDERIZAÇÃO ---
 if 'smtp_loaded' not in st.session_state:
     cfg = carregar_config_smtp(token)
-    if cfg:
-        st.session_state['smtp'] = {
-            'host': cfg.get('smtp_host', 'smtp.gmail.com'),
-            'port': cfg.get('smtp_port', 587),
-            'user': cfg.get('smtp_user', ''),
-            'pass': cfg.get('smtp_pass', '')
-        }
-        # Popula as chaves dos inputs para persistir visualmente
-        st.session_state['smtp_host_input'] = cfg.get('smtp_host', 'smtp.gmail.com')
-        st.session_state['smtp_port_input'] = int(cfg.get('smtp_port', 587))
-        st.session_state['smtp_user_input'] = cfg.get('smtp_user', '')
-        st.session_state['smtp_pass_input'] = cfg.get('smtp_pass', '')
+    
+    # Define valores padrão se não existir no banco
+    host_init = cfg.get('smtp_host', 'smtp.gmail.com')
+    # Força conversão para inteiro para o widget number_input
+    try:
+        port_init = int(cfg.get('smtp_port', 587))
+    except:
+        port_init = 587
+    user_init = cfg.get('smtp_user', '')
+    pass_init = cfg.get('smtp_pass', '')
+
+    # Salva na sessao para uso nas funcoes de envio
+    st.session_state['smtp'] = {
+        'host': host_init,
+        'port': port_init,
+        'user': user_init,
+        'pass': pass_init
+    }
+    
+    # Salva nas KEYS EXATAS dos widgets para que eles já apareçam preenchidos visualmente
+    st.session_state['smtp_host_input'] = host_init
+    st.session_state['smtp_port_input'] = port_init
+    st.session_state['smtp_user_input'] = user_init
+    st.session_state['smtp_pass_input'] = pass_init
+    
     st.session_state['smtp_loaded'] = True
 
 # --- SIDEBAR ---
@@ -562,16 +590,17 @@ with st.sidebar:
             st.success("SALVO")
 
     with st.expander("📧 SMTP CONFIG", expanded=True):
-        # Os valores virão do st.session_state automaticamente pelos keys
+        # Os valores são puxados automaticamente do st.session_state pelas keys (smtp_host_input, etc)
         h = st.text_input("HOST", key="smtp_host_input")
-        p = st.number_input("PORT", key="smtp_port_input")
+        # step=1 garante que seja tratado como inteiro na interface
+        p = st.number_input("PORT", step=1, format="%d", key="smtp_port_input") 
         u = st.text_input("USER", key="smtp_user_input")
         pw = st.text_input("PASS", type="password", key="smtp_pass_input")
         
         if st.button("SALVAR E CONECTAR"):
             st.session_state['smtp'] = {'host': h, 'port': p, 'user': u, 'pass': pw}
             salvar_config_smtp(token, {'smtp_host': h, 'smtp_port': p, 'smtp_user': u, 'smtp_pass': pw})
-            st.toast("Configurações salvas e conectadas!", icon="✅")
+            st.toast("Configurações salvas no DB e conectadas!", icon="✅")
             time.sleep(1)
 
 # --- MAIN ---
@@ -606,13 +635,11 @@ with tab1:
             st.markdown("##### 👁️ COLUNAS VISÍVEIS (ARRASTE PARA ORDENAR)")
             all_cols = list(df.columns)
             
-            # Persistência básica da ordem/seleção de colunas na sessão
             if 'cols_visiveis_save' not in st.session_state:
                 st.session_state['cols_visiveis_save'] = all_cols
                 
             cols_visiveis = st.multiselect("Escolha e ordene as colunas:", all_cols, default=st.session_state['cols_visiveis_save'])
             
-            # Atualiza o state se houver mudança
             if cols_visiveis != st.session_state['cols_visiveis_save']:
                 st.session_state['cols_visiveis_save'] = cols_visiveis
                 st.rerun()
@@ -627,25 +654,20 @@ with tab1:
                 valores_unicos = [str(x) for x in valores_unicos] 
                 filtro_valores = st.multiselect(f"Selecione valores de '{col_para_filtrar}':", valores_unicos)
 
-    # Aplica o filtro visualmente
     df_visual = df.copy()
-    
     if col_para_filtrar != "(Sem Filtro)" and filtro_valores:
         df_visual = df_visual[df_visual[col_para_filtrar].astype(str).isin(filtro_valores)]
 
     if cols_visiveis:
-        # Usa EXATAMENTE a ordem do multiselect para renderizar
         cols_final = [c for c in cols_visiveis]
         if 'id' not in cols_final and 'id' in df_visual.columns:
             cols_final.append('id')
         df_visual = df_visual[cols_final]
 
-    # 2. ÁREA DA TABELA (FULL WIDTH)
     sub_t1, sub_t2 = st.tabs(["📋 TABELA MESTRE", "🤖 TABELA BOT"])
     
     with sub_t1:
         col_config = {}
-        # Habilitar ID visivel se quiser ver a contagem, mas oculto visualmente se não selecionado
         if 'id' in df_visual.columns and 'id' not in cols_visiveis:
              col_config['id'] = st.column_config.Column("id", disabled=True, hidden=True)
 
@@ -660,7 +682,7 @@ with tab1:
         if st.button("💾 SALVAR ALTERAÇÕES NA BASE"):
             chg = st.session_state["editor"]
             
-            # 1. PROCESSAR EXCLUSÕES
+            # EXCLUIR
             deleted_indices = chg.get("deleted_rows", [])
             for idx in deleted_indices:
                 try:
@@ -670,7 +692,7 @@ with tab1:
                 except Exception as e:
                     st.error(f"Erro ao excluir linha: {e}")
 
-            # 2. PROCESSAR EDIÇÕES
+            # EDITAR
             for idx, row in chg["edited_rows"].items():
                 try:
                     if int(idx) < len(df_visual):
@@ -678,7 +700,7 @@ with tab1:
                         atualizar_item(token, user_id, item_id, row)
                 except: pass
             
-            # 3. PROCESSAR ADIÇÕES
+            # ADICIONAR
             max_id = 0
             df_fresh = carregar_dados(token, user_id)
             if not df_fresh.empty and 'id' in df_fresh.columns:
@@ -686,7 +708,6 @@ with tab1:
                     max_id = pd.to_numeric(df_fresh['id'], errors='coerce').max()
                     if pd.isna(max_id): max_id = 0
                 except: max_id = 0
-            
             proximo_id = int(max_id) + 1
 
             for row in chg["added_rows"]:
@@ -695,7 +716,7 @@ with tab1:
                     proximo_id += 1
                 requests.post(f"{DIRECTUS_URL}/items/{get_user_table_name(user_id)}", json=row, headers={"Authorization": f"Bearer {token}"}, verify=False)
             
-            # 4. REORGANIZAR
+            # REORGANIZAR
             if deleted_indices:
                 try:
                     df_reorg = carregar_dados(token, user_id)
@@ -712,7 +733,7 @@ with tab1:
                             novo_contador += 1
                 except: pass
 
-            st.toast("Dados atualizados e reordenados!", icon="✅")
+            st.toast("Dados atualizados!", icon="✅")
             time.sleep(1)
             st.rerun()
     
@@ -740,17 +761,12 @@ with tab1:
 
     if sel_cli != "Selecione..." and not df_ativo.empty:
         dados_cli = df_ativo[df_ativo[col_nome] == sel_cli].iloc[0]
-        
         nome_cliente = dados_cli.get(col_nome, '')
         email_cliente = dados_cli.get('email', '')
         tel = str(dados_cli.get('telefone', '')).replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
         if tel == 'nan' or tel == 'None': tel = ""
         
-        if 'dor_principal' in dados_cli:
-            st.info(f"💡 Dor Identificada: {dados_cli['dor_principal']}")
-
         act_c1, act_c2 = st.columns(2)
-        
         with act_c1:
             st.markdown("#### 💬 WHATSAPP")
             msg_zap = st.text_area("Mensagem:", value=f"Olá {nome_cliente}, tudo bem?", height=100)
@@ -762,15 +778,10 @@ with tab1:
 
         with act_c2:
             st.markdown("#### 📧 GMAIL (IA)")
-            st.caption("Gera um draft e abre no seu Gmail.")
             if st.button("GERAR TEXTO COM IA"):
                 assunto_ia, corpo_ia = gerar_copy_ia(st.session_state.get('ctx', {}), dados_cli)
                 corpo_final = corpo_ia.replace("{nome}", nome_cliente)
-                
-                assunto_safe = urllib.parse.quote(assunto_ia)
-                corpo_safe = urllib.parse.quote(corpo_final)
-                link_gmail = f"https://mail.google.com/mail/?view=cm&fs=1&to={email_cliente}&su={assunto_safe}&body={corpo_safe}"
-                
+                link_gmail = f"https://mail.google.com/mail/?view=cm&fs=1&to={email_cliente}&su={urllib.parse.quote(assunto_ia)}&body={urllib.parse.quote(corpo_final)}"
                 st.markdown(f"**Assunto:** {assunto_ia}")
                 st.link_button("ABRIR NO GMAIL", link_gmail, use_container_width=True)
 
@@ -783,7 +794,6 @@ with tab2:
     subtab_int, subtab_ext = st.tabs(["[ 1 ] DISPARO INTERNO", "[ 2 ] IMPORTAR EXCEL"])
 
     with subtab_int:
-        # 1. PREPARAÇÃO DA BASE UNIFICADA
         lista_mestre = pd.DataFrame()
         lista_bot_u = pd.DataFrame()
 
@@ -796,10 +806,9 @@ with tab2:
             lista_bot_u['origem'] = 'Bot'
 
         df_unificado = pd.concat([lista_mestre, lista_bot_u], ignore_index=True)
-        # Filtro básico de @, mas garantimos STR depois
+        # Filtro básico de @
         df_unificado = df_unificado[df_unificado['email'].astype(str).str.contains("@", na=False)]
         
-        # 2. FILTRAGEM INTELIGENTE
         with st.expander("🎯 FILTRAGEM INTELIGENTE (SEGMENTAÇÃO)", expanded=True):
             f_s1, f_s2, f_s3 = st.columns([1, 2, 1])
             with f_s1:
@@ -812,36 +821,28 @@ with tab2:
             with f_s3:
                 ocultar_enviados = st.checkbox("Ocultar Status 'ENVIADO EM MASSA'?", value=True)
         
-        # APLICA FILTRO
         if col_sniper != "(Todos)" and vals_sniper:
             df_unificado = df_unificado[df_unificado[col_sniper].astype(str).isin(vals_sniper)]
 
-        # APLICA FILTRO DE JÁ ENVIADOS
         if ocultar_enviados and 'status' in df_unificado.columns:
              df_unificado = df_unificado[df_unificado['status'] != "ENVIADO EM MASSA"]
 
-        # CRIA LABELS APÓS FILTRO
         if not df_unificado.empty:
             if 'nome' in df_unificado.columns:
                 df_unificado['label'] = df_unificado['nome'] + " (" + df_unificado['origem'] + ")"
             else:
                 df_unificado['label'] = df_unificado['email']
 
-        # 3. INTERFACE DE DISPARO
         c1, c2 = st.columns([1, 1])
         
         with c1:
             st.markdown("### SELEÇÃO (FILTRADA)")
             opcoes = df_unificado['label'].tolist() if not df_unificado.empty else []
-            
-            # Ordenação: jogar enviados para baixo (caso não tenha filtrado)
             if 'status' in df_unificado.columns:
                 df_unificado.sort_values(by='status', key=lambda x: x == 'ENVIADO EM MASSA', inplace=True)
                 opcoes = df_unificado['label'].tolist()
 
             sels = st.multiselect("ALVOS", opcoes)
-            
-            # SELETOR DE LOTE
             col_lote, col_info = st.columns([1,1])
             with col_lote:
                 modo_lote = st.checkbox("⚡ Enviar Lote de 10?", value=False)
@@ -852,8 +853,6 @@ with tab2:
             
             if len(alvos_finais) > 0:
                 st.info(f"{len(alvos_finais)} alvos prontos para envio.")
-                if modo_lote and len(sels) > 10:
-                    st.caption(f"Faltarão {len(sels)-10} leads para o próximo lote.")
             
         with c2:
             st.markdown("### MENSAGEM")
@@ -863,7 +862,6 @@ with tab2:
             file_anexo = st.file_uploader("ANEXAR ARQUIVO (IMG vira inline, PDF vira anexo)", key="file_int")
             
             if st.button("✨ GERAR COM IA (GROQ)"):
-                # Captura contexto do filtro para a IA
                 ctx_temp = st.session_state.get('ctx', {}).copy()
                 if col_sniper != "(Todos)" and vals_sniper:
                     ctx_temp['segmento_alvo'] = f"{', '.join(vals_sniper)} ({col_sniper})"
@@ -873,8 +871,9 @@ with tab2:
                 st.code(sug_c)
 
         if st.button("🚀 DISPARAR NA BASE"):
-            if not st.session_state.get('smtp'):
-                st.error("CONFIGURE O SMTP NA SIDEBAR")
+            # Verifica se o SMTP está carregado na sessão
+            if not st.session_state.get('smtp') or not st.session_state['smtp'].get('host'):
+                st.error("CONFIGURE O SMTP NA SIDEBAR ANTES DE ENVIAR!")
             elif len(alvos_finais) > saldo_envios:
                 st.error(f"SELEÇÃO ({len(alvos_finais)}) MAIOR QUE SALDO ({saldo_envios})")
             else:
@@ -882,22 +881,20 @@ with tab2:
                 log = st.empty()
                 for i, label_sel in enumerate(alvos_finais):
                     if i > 0:
-                        wait = random.randint(5, 15) # Reduzi um pouco pra batch mode ser mais rapido
+                        wait = random.randint(5, 15)
                         log.warning(f"⏳ RECARREGANDO... {wait}s")
                         time.sleep(wait)
                     
-                    # Localiza alvo
                     tgt_rows = df_unificado[df_unificado['label'] == label_sel]
                     if tgt_rows.empty: continue
                     tgt = tgt_rows.iloc[0]
                     
                     nome_real = tgt.get('nome', 'Parceiro')
-                    # FIX: Força string para evitar erro Int or String expected
+                    # FIX: Força string aqui também
                     email_real = str(tgt['email']).strip()
                     item_id_real = tgt.get('id')
                     
                     if not email_real or email_real.lower() == 'nan':
-                        log.warning(f"E-mail inválido para {nome_real}")
                         continue
 
                     msg_final = corpo.replace("{nome}", nome_real)
@@ -907,7 +904,6 @@ with tab2:
                     
                     if res: 
                         log.success(f"ENVIADO PARA {nome_real}")
-                        # ATUALIZAR STATUS PARA 'ENVIADO EM MASSA'
                         if item_id_real:
                             try:
                                 atualizar_item(token, user_id, item_id_real, {"status": "ENVIADO EM MASSA"})
@@ -934,7 +930,6 @@ with tab2:
                     st.dataframe(df_ext.head(), use_container_width=True)
                     st.info(f"{len(df_ext)} LEADS ENCONTRADOS")
 
-                    # --- IMPORTAÇÃO PARA BASE MESTRE (DIRECTUS) ---
                     col_imp_btn, col_imp_info = st.columns([1, 2])
                     with col_imp_btn:
                         if st.button("💾 IMPORTAR LISTA PARA O CRM", type="primary"):
@@ -949,24 +944,18 @@ with tab2:
                             sucesso_imp = 0
                             
                             for idx, row in df_ext.iterrows():
-                                # PAYLOAD DINÂMICO: PEGA TODAS AS COLUNAS DO EXCEL
                                 payload = {"status": "Novo"}
-                                
                                 for col in df_ext.columns:
-                                    # Limpa o nome da coluna para ser slug (sem acentos e espaços)
                                     slug = col.strip().lower().replace(' ', '_').replace('ç', 'c').replace('ã', 'a')
                                     val = row[col]
                                     if pd.isna(val): val = ""
                                     payload[slug] = str(val)
-
-                                # Envia para Directus
                                 try:
                                     r_imp = requests.post(f"{base_url}/items/{table_name}", json=payload, headers=headers, verify=False)
                                     if r_imp.status_code in [200, 204]:
                                         sucesso_imp += 1
                                 except:
                                     pass
-                                
                                 my_bar.progress((idx + 1) / total_imp)
                             
                             my_bar.empty()
@@ -977,14 +966,8 @@ with tab2:
                     st.markdown("---")
 
                     assunto_ext = st.text_input("ASSUNTO", key="ass_ext")
-                    st.caption("Dica: Use {{imagem}} no texto para inserir a imagem no corpo.")
                     corpo_ext = st.text_area("CORPO HTML (Use {nome})", height=150, key="body_ext")
                     file_anexo_ext = st.file_uploader("ANEXAR ARQUIVO (IMG vira inline, PDF vira anexo)", key="file_ext")
-                    
-                    if st.button("✨ GERAR COM IA (GROQ) - EXT"):
-                        sug_a, sug_c = gerar_copy_ia(st.session_state.get('ctx', {}))
-                        st.info(f"Assunto: {sug_a}")
-                        st.code(sug_c)
                     
                     if st.button("🚀 DISPARAR LISTA EXTERNA"):
                         if not st.session_state.get('smtp'):
@@ -1002,9 +985,7 @@ with tab2:
                                     time.sleep(wait)
                                 
                                 nome_l = row.get('nome', 'Parceiro')
-                                
-                                # FIX: Força string aqui também
-                                email_l = str(row['email']).strip()
+                                email_l = str(row['email']).strip() # FIX: Força string
 
                                 if not email_l or email_l.lower() == 'nan':
                                     continue
