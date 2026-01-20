@@ -839,6 +839,46 @@ with tab2:
                     st.dataframe(df_ext.head(), use_container_width=True)
                     st.info(f"{len(df_ext)} LEADS ENCONTRADOS")
 
+                    # --- IMPORTAÇÃO PARA BASE MESTRE (DIRECTUS) ---
+                    col_imp_btn, col_imp_info = st.columns([1, 2])
+                    with col_imp_btn:
+                        if st.button("💾 IMPORTAR LISTA PARA O CRM", type="primary"):
+                            progress_text = "Importando leads para o banco de dados..."
+                            my_bar = st.progress(0, text=progress_text)
+                            
+                            table_name = get_user_table_name(user_id)
+                            base_url = DIRECTUS_URL.rstrip('/')
+                            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                            
+                            total_imp = len(df_ext)
+                            sucesso_imp = 0
+                            
+                            for idx, row in df_ext.iterrows():
+                                # Mapeamento seguro
+                                payload = {
+                                    "nome": str(row.get('nome', '')),
+                                    "email": str(row.get('email', '')),
+                                    "empresa": str(row.get('empresa', '')),
+                                    "telefone": str(row.get('telefone', '')),
+                                    "status": "Novo"
+                                }
+                                # Envia para Directus
+                                try:
+                                    r_imp = requests.post(f"{base_url}/items/{table_name}", json=payload, headers=headers, verify=False)
+                                    if r_imp.status_code in [200, 204]:
+                                        sucesso_imp += 1
+                                except:
+                                    pass
+                                
+                                my_bar.progress((idx + 1) / total_imp)
+                            
+                            my_bar.empty()
+                            st.success(f"✅ IMPORTAÇÃO CONCLUÍDA! {sucesso_imp} LEADS SALVOS NO CRM.")
+                            time.sleep(2)
+                            st.rerun()
+
+                    st.markdown("---")
+
                     assunto_ext = st.text_input("ASSUNTO", key="ass_ext")
                     st.caption("Dica: Use {{imagem}} no texto para inserir a imagem no corpo.")
                     corpo_ext = st.text_area("CORPO HTML (Use {nome})", height=150, key="body_ext")
