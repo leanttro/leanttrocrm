@@ -245,7 +245,7 @@ def inicializar_crm_usuario(token, user_id):
         {"field": "telefone", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "phone"}},
         {"field": "origem", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "map"}},
         {"field": "url", "type": "string", "meta": {"interface": "input", "width": "full", "icon": "link"}},
-        {"field": "status", "type": "string", "meta": {"interface": "select-dropdown", "options": {"choices": [{"text": "NOVO", "value": "Novo"}, {"text": "QUENTE", "value": "Quente"}, {"text": "CLIENTE", "value": "Cliente"}]}}},
+        {"field": "status", "type": "string", "meta": {"interface": "select-dropdown", "options": {"choices": [{"text": "NOVO", "value": "Novo"}, {"text": "QUENTE", "value": "Quente"}, {"text": "CLIENTE", "value": "Cliente"}, {"text": "ENVIADO EM MASSA", "value": "ENVIADO EM MASSA"}]}}},
         {"field": "obs", "type": "text", "meta": {"interface": "input-multiline"}}
     ]
     
@@ -513,8 +513,8 @@ if 'setup_ok' not in st.session_state:
     inicializar_crm_usuario(token, user_id)
     st.session_state['setup_ok'] = True
 
-# --- FIX: FORÇA CARREGAMENTO DO SMTP SEMPRE QUE RECARREGA A PÁGINA ---
-if 'smtp' not in st.session_state or 'smtp_host_input' not in st.session_state:
+# --- FIX: FORÇA CARREGAMENTO DO SMTP SEMPRE E POPULA KEYS DO WIDGET ---
+if 'smtp_loaded' not in st.session_state:
     cfg = carregar_config_smtp(token)
     if cfg:
         st.session_state['smtp'] = {
@@ -523,10 +523,12 @@ if 'smtp' not in st.session_state or 'smtp_host_input' not in st.session_state:
             'user': cfg.get('smtp_user', ''),
             'pass': cfg.get('smtp_pass', '')
         }
+        # Popula as chaves dos inputs para persistir visualmente
         st.session_state['smtp_host_input'] = cfg.get('smtp_host', 'smtp.gmail.com')
         st.session_state['smtp_port_input'] = int(cfg.get('smtp_port', 587))
         st.session_state['smtp_user_input'] = cfg.get('smtp_user', '')
         st.session_state['smtp_pass_input'] = cfg.get('smtp_pass', '')
+    st.session_state['smtp_loaded'] = True
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -556,11 +558,11 @@ with st.sidebar:
             st.success("SALVO")
 
     with st.expander("📧 SMTP CONFIG", expanded=True):
-        saved = st.session_state.get('smtp', {})
-        h = st.text_input("HOST", value=saved.get('host', "smtp.gmail.com"), key="smtp_host_input")
-        p = st.number_input("PORT", value=int(saved.get('port', 587)), key="smtp_port_input")
-        u = st.text_input("USER", value=saved.get('user', ""), key="smtp_user_input")
-        pw = st.text_input("PASS", value=saved.get('pass', ""), type="password", key="smtp_pass_input")
+        # Os valores virão do st.session_state automaticamente pelos keys
+        h = st.text_input("HOST", key="smtp_host_input")
+        p = st.number_input("PORT", key="smtp_port_input")
+        u = st.text_input("USER", key="smtp_user_input")
+        pw = st.text_input("PASS", type="password", key="smtp_pass_input")
         
         if st.button("SALVAR E CONECTAR"):
             st.session_state['smtp'] = {'host': h, 'port': p, 'user': u, 'pass': pw}
@@ -597,9 +599,19 @@ with tab1:
         f_c1, f_c2 = st.columns([1, 1])
         
         with f_c1:
-            st.markdown("##### 👁️ COLUNAS VISÍVEIS")
+            st.markdown("##### 👁️ COLUNAS VISÍVEIS (ARRASTE PARA ORDENAR)")
             all_cols = list(df.columns)
-            cols_visiveis = st.multiselect("Escolha o que ver:", all_cols, default=all_cols)
+            
+            # Persistência básica da ordem/seleção de colunas na sessão
+            if 'cols_visiveis_save' not in st.session_state:
+                st.session_state['cols_visiveis_save'] = all_cols
+                
+            cols_visiveis = st.multiselect("Escolha e ordene as colunas:", all_cols, default=st.session_state['cols_visiveis_save'])
+            
+            # Atualiza o state se houver mudança
+            if cols_visiveis != st.session_state['cols_visiveis_save']:
+                st.session_state['cols_visiveis_save'] = cols_visiveis
+                st.rerun()
         
         with f_c2:
             st.markdown("##### 🌪️ FILTRAR DADOS")
@@ -618,6 +630,7 @@ with tab1:
         df_visual = df_visual[df_visual[col_para_filtrar].astype(str).isin(filtro_valores)]
 
     if cols_visiveis:
+        # Usa EXATAMENTE a ordem do multiselect para renderizar
         cols_final = [c for c in cols_visiveis]
         if 'id' not in cols_final and 'id' in df_visual.columns:
             cols_final.append('id')
@@ -628,7 +641,7 @@ with tab1:
     
     with sub_t1:
         col_config = {}
-        # Habilitar ID visivel se quiser ver a contagem
+        # Habilitar ID visivel se quiser ver a contagem, mas oculto visualmente se não selecionado
         if 'id' in df_visual.columns and 'id' not in cols_visiveis:
              col_config['id'] = st.column_config.Column("id", disabled=True, hidden=True)
 
@@ -643,14 +656,12 @@ with tab1:
         if st.button("💾 SALVAR ALTERAÇÕES NA BASE"):
             chg = st.session_state["editor"]
             
-            # 1. PROCESSAR EXCLUSÕES (DELETED ROWS)
+            # 1. PROCESSAR EXCLUSÕES
             deleted_indices = chg.get("deleted_rows", [])
             for idx in deleted_indices:
                 try:
-                    # Precisamos pegar o ID original da linha deletada no DF visual
                     if not df_visual.empty and idx < len(df_visual):
                         item_id_del = df_visual.iloc[idx]['id']
-                        # Deleta no Directus
                         requests.delete(f"{DIRECTUS_URL}/items/{get_user_table_name(user_id)}/{item_id_del}", headers={"Authorization": f"Bearer {token}"}, verify=False)
                 except Exception as e:
                     st.error(f"Erro ao excluir linha: {e}")
@@ -658,17 +669,13 @@ with tab1:
             # 2. PROCESSAR EDIÇÕES
             for idx, row in chg["edited_rows"].items():
                 try:
-                    # Ajuste de índice se houver filtros (usar .iloc no df_visual)
-                    # O indice retornado pelo editor corresponde ao df passado para ele
                     if int(idx) < len(df_visual):
                         item_id = df_visual.iloc[int(idx)]['id']
                         atualizar_item(token, user_id, item_id, row)
                 except: pass
             
             # 3. PROCESSAR ADIÇÕES
-            # Descobre maior ID atual para continuar contagem
             max_id = 0
-            # Recarrega DF para pegar IDs frescos antes de adicionar
             df_fresh = carregar_dados(token, user_id)
             if not df_fresh.empty and 'id' in df_fresh.columns:
                 try:
@@ -684,29 +691,22 @@ with tab1:
                     proximo_id += 1
                 requests.post(f"{DIRECTUS_URL}/items/{get_user_table_name(user_id)}", json=row, headers={"Authorization": f"Bearer {token}"}, verify=False)
             
-            # 4. REORGANIZAR CONTAGE (RE-INDEX) SE HOUVE EXCLUSÃO
-            # Se apagou algo, vamos tentar garantir que os IDs fiquem sequenciais (1, 2, 3...)
+            # 4. REORGANIZAR
             if deleted_indices:
                 try:
                     df_reorg = carregar_dados(token, user_id)
                     if not df_reorg.empty and 'id' in df_reorg.columns:
-                        # Garante que 'id' é numérico e ordena
                         df_reorg['id'] = pd.to_numeric(df_reorg['id'], errors='coerce')
                         df_reorg = df_reorg.sort_values(by='id')
-                        
                         novo_contador = 1
                         table_n = get_user_table_name(user_id)
                         headers_api = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-                        
                         for i, r_row in df_reorg.iterrows():
                             id_atual = int(r_row['id'])
                             if id_atual != novo_contador:
-                                # Atualiza ID para cobrir o buraco (ex: 7 vira 6)
                                 requests.patch(f"{DIRECTUS_URL}/items/{table_n}/{id_atual}", json={"id": novo_contador}, headers=headers_api, verify=False)
                             novo_contador += 1
-                except Exception as e:
-                    # Se der erro (ex: banco travado), apenas segue a vida sem reordenar
-                    print(f"Aviso reordenação: {e}")
+                except: pass
 
             st.toast("Dados atualizados e reordenados!", icon="✅")
             time.sleep(1)
@@ -796,7 +796,7 @@ with tab2:
         
         # 2. FILTRAGEM INTELIGENTE
         with st.expander("🎯 FILTRAGEM INTELIGENTE (SEGMENTAÇÃO)", expanded=True):
-            f_s1, f_s2 = st.columns([1, 2])
+            f_s1, f_s2, f_s3 = st.columns([1, 2, 1])
             with f_s1:
                 col_sniper = st.selectbox("Filtrar por:", ["(Todos)"] + list(df_unificado.columns), key="col_sniper")
             with f_s2:
@@ -804,10 +804,16 @@ with tab2:
                 if col_sniper != "(Todos)":
                     unique_vals = [str(x) for x in df_unificado[col_sniper].unique()]
                     vals_sniper = st.multiselect(f"Valores em '{col_sniper}':", unique_vals, key="vals_sniper")
+            with f_s3:
+                ocultar_enviados = st.checkbox("Ocultar Status 'ENVIADO EM MASSA'?", value=True)
         
         # APLICA FILTRO
         if col_sniper != "(Todos)" and vals_sniper:
             df_unificado = df_unificado[df_unificado[col_sniper].astype(str).isin(vals_sniper)]
+
+        # APLICA FILTRO DE JÁ ENVIADOS
+        if ocultar_enviados and 'status' in df_unificado.columns:
+             df_unificado = df_unificado[df_unificado['status'] != "ENVIADO EM MASSA"]
 
         # CRIA LABELS APÓS FILTRO
         if not df_unificado.empty:
@@ -822,9 +828,27 @@ with tab2:
         with c1:
             st.markdown("### SELEÇÃO (FILTRADA)")
             opcoes = df_unificado['label'].tolist() if not df_unificado.empty else []
+            
+            # Ordenação: jogar enviados para baixo (caso não tenha filtrado)
+            if 'status' in df_unificado.columns:
+                df_unificado.sort_values(by='status', key=lambda x: x == 'ENVIADO EM MASSA', inplace=True)
+                opcoes = df_unificado['label'].tolist()
+
             sels = st.multiselect("ALVOS", opcoes)
-            if len(sels) > 0:
-                st.info(f"{len(sels)} alvos selecionados.")
+            
+            # SELETOR DE LOTE
+            col_lote, col_info = st.columns([1,1])
+            with col_lote:
+                modo_lote = st.checkbox("⚡ Enviar Lote de 10?", value=False)
+            
+            alvos_finais = sels
+            if modo_lote:
+                alvos_finais = sels[:10]
+            
+            if len(alvos_finais) > 0:
+                st.info(f"{len(alvos_finais)} alvos prontos para envio.")
+                if modo_lote and len(sels) > 10:
+                    st.caption(f"Faltarão {len(sels)-10} leads para o próximo lote.")
             
         with c2:
             st.markdown("### MENSAGEM")
@@ -846,30 +870,42 @@ with tab2:
         if st.button("🚀 DISPARAR NA BASE"):
             if not st.session_state.get('smtp'):
                 st.error("CONFIGURE O SMTP NA SIDEBAR")
-            elif len(sels) > saldo_envios:
-                st.error(f"SELEÇÃO ({len(sels)}) MAIOR QUE SALDO ({saldo_envios})")
+            elif len(alvos_finais) > saldo_envios:
+                st.error(f"SELEÇÃO ({len(alvos_finais)}) MAIOR QUE SALDO ({saldo_envios})")
             else:
                 bar = st.progress(0)
                 log = st.empty()
-                for i, label_sel in enumerate(sels):
+                for i, label_sel in enumerate(alvos_finais):
                     if i > 0:
-                        wait = random.randint(15, 30)
+                        wait = random.randint(5, 15) # Reduzi um pouco pra batch mode ser mais rapido
                         log.warning(f"⏳ RECARREGANDO... {wait}s")
                         time.sleep(wait)
                     
-                    tgt = df_unificado[df_unificado['label'] == label_sel].iloc[0]
+                    # Localiza alvo
+                    tgt_rows = df_unificado[df_unificado['label'] == label_sel]
+                    if tgt_rows.empty: continue
+                    tgt = tgt_rows.iloc[0]
+                    
                     nome_real = tgt.get('nome', 'Parceiro')
                     email_real = tgt['email']
+                    item_id_real = tgt.get('id')
                     
                     msg_final = corpo.replace("{nome}", nome_real)
                     
                     res, txt = enviar_email_smtp(st.session_state['smtp'], email_real, assunto, msg_final, file_anexo)
                     registrar_log_envio(token, email_real, assunto, "Enviado" if res else f"Erro: {txt}")
                     
-                    if res: log.success(f"ENVIADO PARA {nome_real}")
-                    else: log.error(f"ERRO {nome_real}: {txt}")
+                    if res: 
+                        log.success(f"ENVIADO PARA {nome_real}")
+                        # ATUALIZAR STATUS PARA 'ENVIADO EM MASSA'
+                        if item_id_real:
+                            try:
+                                atualizar_item(token, user_id, item_id_real, {"status": "ENVIADO EM MASSA"})
+                            except: pass
+                    else: 
+                        log.error(f"ERRO {nome_real}: {txt}")
                     
-                    bar.progress((i+1)/len(sels))
+                    bar.progress((i+1)/len(alvos_finais))
                 st.balloons()
                 time.sleep(2)
                 st.rerun()
