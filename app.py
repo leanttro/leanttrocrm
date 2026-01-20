@@ -369,6 +369,10 @@ def registrar_log_envio(token, destinatario, assunto, status):
 
 def enviar_email_smtp(smtp_config, to, subject, body, anexo=None):
     try:
+        # CORREÇÃO DE SEGURANÇA: GARANTIR QUE SÃO STRINGS
+        to = str(to).strip()
+        subject = str(subject).strip()
+
         usar_imagem_inline = False
         if anexo is not None and "{{imagem}}" in body.lower():
             if "image" in anexo.type:
@@ -404,7 +408,7 @@ def enviar_email_smtp(smtp_config, to, subject, body, anexo=None):
                 part.add_header('Content-Disposition', f'attachment; filename="{anexo.name}"')
                 msg.attach(part)
 
-        server = smtplib.SMTP(smtp_config['host'], smtp_config['port'])
+        server = smtplib.SMTP(smtp_config['host'], int(smtp_config['port'])) # Força INT na porta
         server.starttls()
         server.login(smtp_config['user'], smtp_config['pass'])
         server.sendmail(smtp_config['user'], to, msg.as_string())
@@ -792,7 +796,8 @@ with tab2:
             lista_bot_u['origem'] = 'Bot'
 
         df_unificado = pd.concat([lista_mestre, lista_bot_u], ignore_index=True)
-        df_unificado = df_unificado[df_unificado['email'].str.contains("@", na=False)]
+        # Filtro básico de @, mas garantimos STR depois
+        df_unificado = df_unificado[df_unificado['email'].astype(str).str.contains("@", na=False)]
         
         # 2. FILTRAGEM INTELIGENTE
         with st.expander("🎯 FILTRAGEM INTELIGENTE (SEGMENTAÇÃO)", expanded=True):
@@ -887,9 +892,14 @@ with tab2:
                     tgt = tgt_rows.iloc[0]
                     
                     nome_real = tgt.get('nome', 'Parceiro')
-                    email_real = tgt['email']
+                    # FIX: Força string para evitar erro Int or String expected
+                    email_real = str(tgt['email']).strip()
                     item_id_real = tgt.get('id')
                     
+                    if not email_real or email_real.lower() == 'nan':
+                        log.warning(f"E-mail inválido para {nome_real}")
+                        continue
+
                     msg_final = corpo.replace("{nome}", nome_real)
                     
                     res, txt = enviar_email_smtp(st.session_state['smtp'], email_real, assunto, msg_final, file_anexo)
@@ -992,7 +1002,13 @@ with tab2:
                                     time.sleep(wait)
                                 
                                 nome_l = row.get('nome', 'Parceiro')
-                                email_l = row['email']
+                                
+                                # FIX: Força string aqui também
+                                email_l = str(row['email']).strip()
+
+                                if not email_l or email_l.lower() == 'nan':
+                                    continue
+
                                 msg_final = corpo_ext.replace("{nome}", str(nome_l))
                                 
                                 res, txt = enviar_email_smtp(st.session_state['smtp'], email_l, assunto_ext, msg_final, file_anexo_ext)
