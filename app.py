@@ -204,7 +204,7 @@ DIRECTUS_URL = os.getenv("DIRECTUS_URL", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "") 
 
 # [!!!] COLOQUE SUA CHAVE DO WEBHOOK DO DIRECTUS AQUI EMBAIXO:
-TRACKING_WEBHOOK_KEY = "https://api.leanttro.com/flows/trigger/0deea9a4-ce23-4aee-bb82-d9422bd8e15f"
+TRACKING_WEBHOOK_KEY = "0deea9a4-ce23-4aee-bb82-d9422bd8e15f"
 
 groq_client = None
 if GROQ_API_KEY:
