@@ -199,9 +199,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- VARS & CLIENTE GROQ ---
+# --- VARS & CLIENTE GROQ & TRACKING ---
 DIRECTUS_URL = os.getenv("DIRECTUS_URL", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "") 
+
+# [!!!] COLOQUE SUA CHAVE DO WEBHOOK DO DIRECTUS AQUI EMBAIXO:
+TRACKING_WEBHOOK_KEY = "https://api.leanttro.com/flows/trigger/0deea9a4-ce23-4aee-bb82-d9422bd8e15f"
 
 groq_client = None
 if GROQ_API_KEY:
@@ -355,6 +358,7 @@ def contar_envios_hoje(token):
     except: pass
     return 0
 
+# --- FUNÇÃO ATUALIZADA: AGORA RETORNA O ID PARA RASTREAMENTO ---
 def registrar_log_envio(token, destinatario, assunto, status):
     try:
         base_url = DIRECTUS_URL.rstrip('/')
@@ -362,16 +366,40 @@ def registrar_log_envio(token, destinatario, assunto, status):
             "data_envio": datetime.now().isoformat(),
             "destinatario": destinatario,
             "assunto": assunto,
-            "status": status
+            "status": status,
+            "aberto": False # Campo útil se existir no directus
         }
-        requests.post(f"{base_url}/items/historico_envios", json=payload, headers={"Authorization": f"Bearer {token}"}, verify=False)
+        r = requests.post(f"{base_url}/items/historico_envios", json=payload, headers={"Authorization": f"Bearer {token}"}, verify=False)
+        if r.status_code in [200, 201]:
+            return r.json()['data']['id'] # Retorna ID para pixel
+    except: pass
+    return None
+
+# --- NOVA FUNÇÃO: ATUALIZA O STATUS DEPOIS DE TENTAR ENVIAR ---
+def atualizar_status_envio(token, log_id, novo_status, erro_msg=None):
+    try:
+        base_url = DIRECTUS_URL.rstrip('/')
+        payload = {"status": novo_status}
+        if erro_msg:
+            payload["obs"] = erro_msg
+        requests.patch(f"{base_url}/items/historico_envios/{log_id}", json=payload, headers={"Authorization": f"Bearer {token}"}, verify=False)
     except: pass
 
-def enviar_email_smtp(smtp_config, to, subject, body, anexo=None):
+# --- FUNÇÃO ATUALIZADA: SUPORTA PIXEL DE RASTREAMENTO ---
+def enviar_email_smtp(smtp_config, to, subject, body, anexo=None, tracking_url=None):
     try:
         # CORREÇÃO DE SEGURANÇA: GARANTIR QUE SÃO STRINGS
         to = str(to).strip()
         subject = str(subject).strip()
+
+        # --- INJEÇÃO DO PIXEL ---
+        if tracking_url:
+            pixel_html = f'<img src="{tracking_url}" width="1" height="1" style="display:none;" />'
+            # Tenta inserir antes do fechamento do body, senão anexa ao fim
+            if "</body>" in body:
+                body = body.replace("</body>", f"{pixel_html}</body>")
+            else:
+                body += pixel_html
 
         usar_imagem_inline = False
         if anexo is not None and "{{imagem}}" in body.lower():
@@ -899,19 +927,35 @@ with tab2:
                     if not email_real or email_real.lower() == 'nan':
                         log.warning(f"E-mail inválido para {nome_real}")
                         continue
+                    
+                    # --- NOVO FLUXO DE RASTREAMENTO ---
+                    # 1. Cria o log primeiro para pegar o ID
+                    log_id = registrar_log_envio(token, email_real, assunto, "Enviando...")
+                    
+                    # 2. Gera URL do Pixel
+                    tracking_url = None
+                    if log_id and TRACKING_WEBHOOK_KEY != "SUA_CHAVE_AQUI":
+                        base_clean = DIRECTUS_URL.rstrip('/')
+                        tracking_url = f"{base_clean}/flows/trigger/{TRACKING_WEBHOOK_KEY}?log_id={log_id}"
 
                     msg_final = corpo.replace("{nome}", nome_real)
                     
-                    res, txt = enviar_email_smtp(st.session_state['smtp'], email_real, assunto, msg_final, file_anexo)
-                    registrar_log_envio(token, email_real, assunto, "Enviado" if res else f"Erro: {txt}")
+                    # 3. Envia com o Pixel
+                    res, txt = enviar_email_smtp(st.session_state['smtp'], email_real, assunto, msg_final, file_anexo, tracking_url)
                     
-                    if res: 
-                        log.success(f"ENVIADO PARA {nome_real}")
-                        # ATUALIZAR STATUS PARA 'ENVIADO EM MASSA'
-                        if item_id_real:
+                    # 4. Atualiza o status
+                    if log_id:
+                        novo_status = "Enviado" if res else f"Erro: {txt}"
+                        atualizar_status_envio(token, log_id, novo_status)
+
+                        # Se deu sucesso e era um item do CRM, atualiza o status no CRM também
+                        if res and item_id_real:
                             try:
                                 atualizar_item(token, user_id, item_id_real, {"status": "ENVIADO EM MASSA"})
                             except: pass
+
+                    if res: 
+                        log.success(f"ENVIADO PARA {nome_real}")
                     else: 
                         log.error(f"ERRO {nome_real}: {txt}")
                     
@@ -1008,11 +1052,22 @@ with tab2:
 
                                 if not email_l or email_l.lower() == 'nan':
                                     continue
+                                
+                                # --- NOVO FLUXO DE RASTREAMENTO EXTERNO ---
+                                log_id = registrar_log_envio(token, email_l, assunto_ext, "Enviando... [EXT]")
+                                
+                                tracking_url = None
+                                if log_id and TRACKING_WEBHOOK_KEY != "SUA_CHAVE_AQUI":
+                                    base_clean = DIRECTUS_URL.rstrip('/')
+                                    tracking_url = f"{base_clean}/flows/trigger/{TRACKING_WEBHOOK_KEY}?log_id={log_id}"
 
                                 msg_final = corpo_ext.replace("{nome}", str(nome_l))
                                 
-                                res, txt = enviar_email_smtp(st.session_state['smtp'], email_l, assunto_ext, msg_final, file_anexo_ext)
-                                registrar_log_envio(token, email_l, assunto_ext, "Enviado [EXT]" if res else f"Erro: {txt}")
+                                res, txt = enviar_email_smtp(st.session_state['smtp'], email_l, assunto_ext, msg_final, file_anexo_ext, tracking_url)
+                                
+                                if log_id:
+                                    novo_status = "Enviado [EXT]" if res else f"Erro: {txt}"
+                                    atualizar_status_envio(token, log_id, novo_status)
 
                                 if res: log2.success(f"ENVIADO: {email_l}")
                                 else: log2.error(f"FALHA: {email_l}")
