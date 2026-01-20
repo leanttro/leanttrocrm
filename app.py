@@ -231,20 +231,31 @@ def inicializar_crm_usuario(token, user_id):
     base_url = DIRECTUS_URL.rstrip('/')
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     
-    # 1. Tabela CRM (Existente)
+    # 1. Tabela CRM
+    # Verifica se existe, se não cria
     r = requests.get(f"{base_url}/collections/{table_name}", headers=headers, verify=False)
     if r.status_code != 200:
         schema = {"collection": table_name, "schema": {}, "meta": {"icon": "rocket", "note": "Leanttro CRM Table"}}
         requests.post(f"{base_url}/collections", json=schema, headers=headers, verify=False)
-        campos = [
-            {"field": "nome", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "person"}},
-            {"field": "empresa", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "domain"}},
-            {"field": "email", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "email"}},
-            {"field": "telefone", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "phone"}},
-            {"field": "status", "type": "string", "meta": {"interface": "select-dropdown", "options": {"choices": [{"text": "NOVO", "value": "Novo"}, {"text": "QUENTE", "value": "Quente"}, {"text": "CLIENTE", "value": "Cliente"}]}}},
-            {"field": "obs", "type": "text", "meta": {"interface": "input-multiline"}}
-        ]
-        for campo in campos: requests.post(f"{base_url}/fields/{table_name}", json=campo, headers=headers, verify=False)
+    
+    # Lista de campos padrão (ADICIONEI ORIGEM E URL AQUI)
+    campos = [
+        {"field": "nome", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "person"}},
+        {"field": "empresa", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "domain"}},
+        {"field": "email", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "email"}},
+        {"field": "telefone", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "phone"}},
+        {"field": "origem", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "map"}},
+        {"field": "url", "type": "string", "meta": {"interface": "input", "width": "full", "icon": "link"}},
+        {"field": "status", "type": "string", "meta": {"interface": "select-dropdown", "options": {"choices": [{"text": "NOVO", "value": "Novo"}, {"text": "QUENTE", "value": "Quente"}, {"text": "CLIENTE", "value": "Cliente"}]}}},
+        {"field": "obs", "type": "text", "meta": {"interface": "input-multiline"}}
+    ]
+    
+    # Tenta criar todos os campos (se já existir, a API ignora ou retorna erro que tratamos com try)
+    for campo in campos:
+        try:
+            requests.post(f"{base_url}/fields/{table_name}", json=campo, headers=headers, verify=False)
+        except:
+            pass # Campo provavelente já existe
 
     # 2. Tabela SMTP
     r_smtp = requests.get(f"{base_url}/collections/config_smtp", headers=headers, verify=False)
@@ -285,7 +296,8 @@ def carregar_dados(token, user_id):
         if r.status_code == 200:
             df = pd.DataFrame(r.json()['data'])
             if 'id' in df.columns:
-                cols_pri = ['id', 'nome', 'empresa', 'email', 'telefone', 'status']
+                # Prioriza colunas padrão, o resto vem depois
+                cols_pri = ['id', 'nome', 'empresa', 'email', 'telefone', 'origem', 'status']
                 cols_existentes = [c for c in cols_pri if c in df.columns]
                 cols_restantes = [c for c in df.columns if c not in cols_existentes]
                 return df[cols_existentes + cols_restantes]
@@ -505,7 +517,6 @@ if 'setup_ok' not in st.session_state:
     st.session_state['setup_ok'] = True
 
 # --- FIX: FORÇA CARREGAMENTO DO SMTP SEMPRE QUE RECARREGA A PÁGINA ---
-# Se os dados não estiverem na sessão, busca do banco e popula os inputs
 if 'smtp' not in st.session_state or 'smtp_host_input' not in st.session_state:
     cfg = carregar_config_smtp(token)
     if cfg:
@@ -515,7 +526,6 @@ if 'smtp' not in st.session_state or 'smtp_host_input' not in st.session_state:
             'user': cfg.get('smtp_user', ''),
             'pass': cfg.get('smtp_pass', '')
         }
-        # Popula as chaves específicas dos widgets
         st.session_state['smtp_host_input'] = cfg.get('smtp_host', 'smtp.gmail.com')
         st.session_state['smtp_port_input'] = int(cfg.get('smtp_port', 587))
         st.session_state['smtp_user_input'] = cfg.get('smtp_user', '')
@@ -550,7 +560,6 @@ with st.sidebar:
 
     with st.expander("📧 SMTP CONFIG", expanded=True):
         saved = st.session_state.get('smtp', {})
-        # Usando keys persistentes populadas no load
         h = st.text_input("HOST", value=saved.get('host', "smtp.gmail.com"), key="smtp_host_input")
         p = st.number_input("PORT", value=int(saved.get('port', 587)), key="smtp_port_input")
         u = st.text_input("USER", value=saved.get('user', ""), key="smtp_user_input")
@@ -558,7 +567,6 @@ with st.sidebar:
         
         if st.button("SALVAR E CONECTAR"):
             st.session_state['smtp'] = {'host': h, 'port': p, 'user': u, 'pass': pw}
-            # Atualiza também o banco
             salvar_config_smtp(token, {'smtp_host': h, 'smtp_port': p, 'smtp_user': u, 'smtp_pass': pw})
             st.toast("Configurações salvas e conectadas!", icon="✅")
             time.sleep(1)
@@ -827,7 +835,7 @@ with tab2:
 
     with subtab_ext:
         st.markdown("### 📂 UPLOAD DE LISTA (EXCEL .xlsx)")
-        up_file = st.file_uploader("ARQUIVO EXCEL (Colunas: nome, email)", type=["xlsx"])
+        up_file = st.file_uploader("ARQUIVO EXCEL (Colunas: nome, email, origem, url...)", type=["xlsx"])
         
         if up_file:
             try:
@@ -854,14 +862,16 @@ with tab2:
                             sucesso_imp = 0
                             
                             for idx, row in df_ext.iterrows():
-                                # Mapeamento seguro
-                                payload = {
-                                    "nome": str(row.get('nome', '')),
-                                    "email": str(row.get('email', '')),
-                                    "empresa": str(row.get('empresa', '')),
-                                    "telefone": str(row.get('telefone', '')),
-                                    "status": "Novo"
-                                }
+                                # PAYLOAD DINÂMICO: PEGA TODAS AS COLUNAS DO EXCEL
+                                payload = {"status": "Novo"}
+                                
+                                for col in df_ext.columns:
+                                    # Limpa o nome da coluna para ser slug (sem acentos e espaços)
+                                    slug = col.strip().lower().replace(' ', '_').replace('ç', 'c').replace('ã', 'a')
+                                    val = row[col]
+                                    if pd.isna(val): val = ""
+                                    payload[slug] = str(val)
+
                                 # Envia para Directus
                                 try:
                                     r_imp = requests.post(f"{base_url}/items/{table_name}", json=payload, headers=headers, verify=False)
