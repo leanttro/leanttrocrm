@@ -232,13 +232,12 @@ def inicializar_crm_usuario(token, user_id):
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     
     # 1. Tabela CRM
-    # Verifica se existe, se não cria
     r = requests.get(f"{base_url}/collections/{table_name}", headers=headers, verify=False)
     if r.status_code != 200:
         schema = {"collection": table_name, "schema": {}, "meta": {"icon": "rocket", "note": "Leanttro CRM Table"}}
         requests.post(f"{base_url}/collections", json=schema, headers=headers, verify=False)
     
-    # Lista de campos padrão (ADICIONEI ORIGEM E URL AQUI)
+    # Lista de campos padrão
     campos = [
         {"field": "nome", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "person"}},
         {"field": "empresa", "type": "string", "meta": {"interface": "input", "width": "half", "icon": "domain"}},
@@ -250,12 +249,11 @@ def inicializar_crm_usuario(token, user_id):
         {"field": "obs", "type": "text", "meta": {"interface": "input-multiline"}}
     ]
     
-    # Tenta criar todos os campos (se já existir, a API ignora ou retorna erro que tratamos com try)
     for campo in campos:
         try:
             requests.post(f"{base_url}/fields/{table_name}", json=campo, headers=headers, verify=False)
         except:
-            pass # Campo provavelente já existe
+            pass 
 
     # 2. Tabela SMTP
     r_smtp = requests.get(f"{base_url}/collections/config_smtp", headers=headers, verify=False)
@@ -296,7 +294,6 @@ def carregar_dados(token, user_id):
         if r.status_code == 200:
             df = pd.DataFrame(r.json()['data'])
             if 'id' in df.columns:
-                # Prioriza colunas padrão, o resto vem depois
                 cols_pri = ['id', 'nome', 'empresa', 'email', 'telefone', 'origem', 'status']
                 cols_existentes = [c for c in cols_pri if c in df.columns]
                 cols_restantes = [c for c in df.columns if c not in cols_existentes]
@@ -631,6 +628,7 @@ with tab1:
     
     with sub_t1:
         col_config = {}
+        # Habilitar ID visivel se quiser ver a contagem
         if 'id' in df_visual.columns and 'id' not in cols_visiveis:
              col_config['id'] = st.column_config.Column("id", disabled=True, hidden=True)
 
@@ -645,16 +643,36 @@ with tab1:
         if st.button("💾 SALVAR ALTERAÇÕES NA BASE"):
             chg = st.session_state["editor"]
             
+            # 1. PROCESSAR EXCLUSÕES (DELETED ROWS)
+            deleted_indices = chg.get("deleted_rows", [])
+            for idx in deleted_indices:
+                try:
+                    # Precisamos pegar o ID original da linha deletada no DF visual
+                    if not df_visual.empty and idx < len(df_visual):
+                        item_id_del = df_visual.iloc[idx]['id']
+                        # Deleta no Directus
+                        requests.delete(f"{DIRECTUS_URL}/items/{get_user_table_name(user_id)}/{item_id_del}", headers={"Authorization": f"Bearer {token}"}, verify=False)
+                except Exception as e:
+                    st.error(f"Erro ao excluir linha: {e}")
+
+            # 2. PROCESSAR EDIÇÕES
             for idx, row in chg["edited_rows"].items():
                 try:
-                    item_id = df.loc[int(idx)]['id']
-                    atualizar_item(token, user_id, item_id, row)
+                    # Ajuste de índice se houver filtros (usar .iloc no df_visual)
+                    # O indice retornado pelo editor corresponde ao df passado para ele
+                    if int(idx) < len(df_visual):
+                        item_id = df_visual.iloc[int(idx)]['id']
+                        atualizar_item(token, user_id, item_id, row)
                 except: pass
             
+            # 3. PROCESSAR ADIÇÕES
+            # Descobre maior ID atual para continuar contagem
             max_id = 0
-            if not df.empty and 'id' in df.columns:
+            # Recarrega DF para pegar IDs frescos antes de adicionar
+            df_fresh = carregar_dados(token, user_id)
+            if not df_fresh.empty and 'id' in df_fresh.columns:
                 try:
-                    max_id = pd.to_numeric(df['id'], errors='coerce').max()
+                    max_id = pd.to_numeric(df_fresh['id'], errors='coerce').max()
                     if pd.isna(max_id): max_id = 0
                 except: max_id = 0
             
@@ -664,10 +682,33 @@ with tab1:
                 if 'id' not in row or not row['id']:
                     row['id'] = proximo_id
                     proximo_id += 1
-                
                 requests.post(f"{DIRECTUS_URL}/items/{get_user_table_name(user_id)}", json=row, headers={"Authorization": f"Bearer {token}"}, verify=False)
             
-            st.toast("Dados sincronizados com sucesso!", icon="✅")
+            # 4. REORGANIZAR CONTAGE (RE-INDEX) SE HOUVE EXCLUSÃO
+            # Se apagou algo, vamos tentar garantir que os IDs fiquem sequenciais (1, 2, 3...)
+            if deleted_indices:
+                try:
+                    df_reorg = carregar_dados(token, user_id)
+                    if not df_reorg.empty and 'id' in df_reorg.columns:
+                        # Garante que 'id' é numérico e ordena
+                        df_reorg['id'] = pd.to_numeric(df_reorg['id'], errors='coerce')
+                        df_reorg = df_reorg.sort_values(by='id')
+                        
+                        novo_contador = 1
+                        table_n = get_user_table_name(user_id)
+                        headers_api = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                        
+                        for i, r_row in df_reorg.iterrows():
+                            id_atual = int(r_row['id'])
+                            if id_atual != novo_contador:
+                                # Atualiza ID para cobrir o buraco (ex: 7 vira 6)
+                                requests.patch(f"{DIRECTUS_URL}/items/{table_n}/{id_atual}", json={"id": novo_contador}, headers=headers_api, verify=False)
+                            novo_contador += 1
+                except Exception as e:
+                    # Se der erro (ex: banco travado), apenas segue a vida sem reordenar
+                    print(f"Aviso reordenação: {e}")
+
+            st.toast("Dados atualizados e reordenados!", icon="✅")
             time.sleep(1)
             st.rerun()
     
