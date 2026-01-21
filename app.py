@@ -392,10 +392,15 @@ def enviar_email_smtp(smtp_config, to, subject, body, anexo=None, tracking_url=N
         to = str(to).strip()
         subject = str(subject).strip()
 
-        # --- INJEÇÃO DO PIXEL ---
+        # --- INJEÇÃO DO PIXEL (COM CACHE BUSTER) ---
         if tracking_url:
-            pixel_html = f'<img src="{tracking_url}" width="1" height="1" style="display:none;" />'
-            # Tenta inserir antes do fechamento do body, senão anexa ao fim
+            # Adiciona um número aleatório no final para o Google achar que é uma imagem nova
+            cache_buster = random.randint(1000, 999999)
+            url_final = f"{tracking_url}&r={cache_buster}"
+            
+            # O style display:none as vezes é ignorado pelo gmail, use style direto
+            pixel_html = f'<img src="{url_final}" width="1" height="1" style="display:block; width:1px; height:1px; opacity:0.01;" alt="" />'
+            
             if "</body>" in body:
                 body = body.replace("</body>", f"{pixel_html}</body>")
             else:
