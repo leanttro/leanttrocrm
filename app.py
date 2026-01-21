@@ -385,7 +385,7 @@ def atualizar_status_envio(token, log_id, novo_status, erro_msg=None):
         requests.patch(f"{base_url}/items/historico_envios/{log_id}", json=payload, headers={"Authorization": f"Bearer {token}"}, verify=False)
     except: pass
 
-# --- FUNÇÃO ATUALIZADA: SUPORTA PIXEL DE RASTREAMENTO ---
+# --- FUNÇÃO ATUALIZADA: SUPORTA PIXEL DE RASTREAMENTO E UTF-8 ---
 def enviar_email_smtp(smtp_config, to, subject, body, anexo=None, tracking_url=None):
     try:
         # CORREÇÃO DE SEGURANÇA: GARANTIR QUE SÃO STRINGS
@@ -421,7 +421,9 @@ def enviar_email_smtp(smtp_config, to, subject, body, anexo=None, tracking_url=N
 
             cid_id = "imagem_corpo"
             body_atualizado = body.replace("{{imagem}}", f'<br><img src="cid:{cid_id}" style="max-width:100%; height:auto;"><br>')
-            msg_alternative.attach(MIMEText(body_atualizado, 'html'))
+            
+            # FIX CRÍTICO: UTF-8 PARA EVITAR ERRO DE ACENTUAÇÃO
+            msg_alternative.attach(MIMEText(body_atualizado, 'html', 'utf-8'))
 
             img_data = anexo.getvalue()
             image = MIMEImage(img_data)
@@ -433,7 +435,10 @@ def enviar_email_smtp(smtp_config, to, subject, body, anexo=None, tracking_url=N
             msg['From'] = smtp_config['user']
             msg['To'] = to
             msg['Subject'] = subject
-            msg.attach(MIMEText(body, 'html'))
+            
+            # FIX CRÍTICO: UTF-8 PARA EVITAR ERRO DE ACENTUAÇÃO
+            msg.attach(MIMEText(body, 'html', 'utf-8'))
+            
             if anexo is not None:
                 part = MIMEBase('application', 'octet-stream')
                 part.set_payload(anexo.getvalue())
