@@ -499,6 +499,40 @@ def gerar_copy_ia(ctx, dados_cliente=None):
     except Exception as e:
         return "Erro IA", str(e)
 
+# --- NOVA FUNÇÃO ESPECÍFICA PARA WHATSAPP ---
+def gerar_whatsapp_ia(ctx, dados_cliente=None):
+    if not groq_client: return "Erro: API Key não configurada"
+    
+    empresa = ctx.get('empresa', 'Leanttro')
+    descricao = ctx.get('descricao', 'Landing Pages')
+    
+    nome = "Doutor(a)"
+    dor = ""
+    if dados_cliente is not None:
+        nome = dados_cliente.get('nome', 'Doutor(a)')
+        if 'dor_principal' in dados_cliente:
+            dor = f"Foque na dor: {dados_cliente['dor_principal']}"
+
+    prompt = f"""
+    Aja como um especialista em vendas B2B via WhatsApp.
+    Escreva uma mensagem MUITO CURTA (máximo 2 frases) e direta para abordagem fria.
+    Contexto: {empresa} vende {descricao}.
+    Cliente: {nome}.
+    {dor}
+    OBRIGATÓRIO: A mensagem DEVE incluir o link: www.leanttro.com/zenilda-adv
+    Tom: Informal, "vizinho", mas profissional. Sem "cara de robô".
+    Objetivo: Apenas despertar interesse para clicar no link e ver o exemplo.
+    """
+    
+    try:
+        chat_completion = groq_client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama-3.3-70b-versatile",
+        )
+        return chat_completion.choices[0].message.content
+    except Exception as e:
+        return f"Erro IA: {str(e)}"
+
 def validar_token(token):
     try:
         r = requests.get(f"{DIRECTUS_URL}/users/me", headers={"Authorization": f"Bearer {token}"}, verify=False)
@@ -792,8 +826,25 @@ with tab1:
         
         with act_c1:
             st.markdown("#### 💬 WHATSAPP")
-            msg_zap = st.text_area("Mensagem:", value=f"Olá Dr(a). {nome_cliente}, tudo bem? Sou vizinho aqui da região do Jabaquara, vi seu perfil e notei uma oportunidade...", height=100)
-            # --- INICIO DO BLOCO CORRIGIDO ---
+            
+            # --- LÓGICA DE BOTÃO IA PARA WHATSAPP ---
+            if st.session_state.get('last_selected_client') != sel_cli:
+                st.session_state['last_selected_client'] = sel_cli
+                st.session_state['ai_zap_text'] = None # Limpa texto IA se mudar cliente
+                
+            default_template = f"Olá Dr(a). {nome_cliente}, tudo bem? Sou vizinho aqui da região do Jabaquara, vi seu perfil e notei uma oportunidade..."
+            
+            if st.button("✨ GERAR TEXTO ZAP (IA)"):
+                gen_text = gerar_whatsapp_ia(st.session_state.get('ctx', {}), dados_cli)
+                st.session_state['ai_zap_text'] = gen_text
+                st.rerun()
+                
+            text_to_show = st.session_state.get('ai_zap_text') if st.session_state.get('ai_zap_text') else default_template
+            msg_zap = st.text_area("Mensagem:", value=text_to_show, height=100)
+            
+            # --- FIM LÓGICA IA ---
+
+            # --- INICIO DO BLOCO DE ENVIO ---
             raw_tel = str(dados_cli.get('telefone', ''))
             nums = re.sub(r'\D', '', raw_tel) # Remove tudo que não é número
 
@@ -812,7 +863,7 @@ with tab1:
                 st.link_button("ENVIAR WHATSAPP", link_zap, use_container_width=True)
             else:
                 st.warning("Telefone inválido para envio.")
-            # --- FIM DO BLOCO CORRIGIDO ---
+            # --- FIM DO BLOCO DE ENVIO ---
 
         with act_c2:
             st.markdown("#### 📧 GMAIL (IA)")
