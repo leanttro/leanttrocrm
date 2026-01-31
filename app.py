@@ -15,6 +15,7 @@ import random
 import urllib3
 import json
 import urllib.parse
+import re
 
 # --- CONFIGURAÇÕES DE PÁGINA ---
 st.set_page_config(page_title="LEANTTRO CRM", layout="wide", page_icon="⚡")
@@ -592,9 +593,9 @@ with st.sidebar:
                 time.sleep(1)
                 st.rerun()
 
-    with st.expander("🤖 DADOS DA EMPRESA (IA)"):
-        en = st.text_input("NOME EMPRESA", value="Minha Agência")
-        ed = st.text_area("O QUE VENDE?", value="Sites de alta conversão")
+    with st.expander("🤖 DADOS DA EMPRESA (IA)", expanded=True):
+        en = st.text_input("NOME EMPRESA", value="Leanttro (Especialista em Jurídico)")
+        ed = st.text_area("O QUE VENDE?", value="Landing Pages de Alta Conversão para Advogados. Produto foco: www.leanttro.com/zenilda-adv. Ajuda a passar autoridade e captar clientes qualificados.")
         if st.button("SALVAR CONTEXTO"):
             st.session_state['ctx'] = {'empresa': en, 'descricao': ed}
             st.success("SALVO")
@@ -791,12 +792,27 @@ with tab1:
         
         with act_c1:
             st.markdown("#### 💬 WHATSAPP")
-            msg_zap = st.text_area("Mensagem:", value=f"Olá {nome_cliente}, tudo bem?", height=100)
-            if tel:
-                link_zap = f"https://wa.me/55{tel}?text={urllib.parse.quote(msg_zap)}"
+            msg_zap = st.text_area("Mensagem:", value=f"Olá Dr(a). {nome_cliente}, tudo bem? Sou vizinho aqui da região do Jabaquara, vi seu perfil e notei uma oportunidade...", height=100)
+            # --- INICIO DO BLOCO CORRIGIDO ---
+            raw_tel = str(dados_cli.get('telefone', ''))
+            nums = re.sub(r'\D', '', raw_tel) # Remove tudo que não é número
+
+            tel_final = ""
+            if nums:
+                # Se já tiver 55 e for longo (ex: 5511999999999), mantém. Se não, adiciona.
+                if nums.startswith('55') and len(nums) > 11:
+                    tel_final = nums
+                else:
+                    tel_final = f"55{nums}"
+
+            if tel_final:
+                # Usa api.whatsapp.com para evitar erros 404
+                msg_encoded = urllib.parse.quote(msg_zap)
+                link_zap = f"https://api.whatsapp.com/send?phone={tel_final}&text={msg_encoded}"
                 st.link_button("ENVIAR WHATSAPP", link_zap, use_container_width=True)
             else:
-                st.warning("Sem telefone cadastrado.")
+                st.warning("Telefone inválido para envio.")
+            # --- FIM DO BLOCO CORRIGIDO ---
 
         with act_c2:
             st.markdown("#### 📧 GMAIL (IA)")
