@@ -16,5 +16,5 @@ COPY . .
 EXPOSE 8501
 EXPOSE 8000
 
-# Roda o servidor de arquivos na pasta crm na porta 8000 e em paralelo o Streamlit na 8501
-CMD ["sh", "-c", "cd crm && python -m http.server 8000 & streamlit run /app/app.py --server.port=8501 --server.address=0.0.0.0 --server.baseUrlPath=/prospect --server.fileWatcherType=none --browser.gatherUsageStats=false"]
+# Roda o servidor Python na raiz e o Streamlit em paralelo
+CMD ["sh", "-c", "python -m http.server 8000 --bind 0.0.0.0 & streamlit run app.py --server.port=8501 --server.address=0.0.0.0 --server.baseUrlPath=/prospect --server.fileWatcherType=none --browser.gatherUsageStats=false"]
