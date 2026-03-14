@@ -1,20 +1,20 @@
-# Usamos a imagem completa (não-slim) para garantir que tenha tudo sem precisar de internet extra
-FROM python:3.9
+FROM python:3.10-slim
+
+# Variáveis para otimizar Python
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Copia os requisitos
+# Instalação
 COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Instala as bibliotecas do Python direto
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
-
-# Copia o código
 COPY . .
 
-# Expõe a porta
+# Porta do Streamlit e Porta do CRM HTML
 EXPOSE 8501
+EXPOSE 8000
 
-# Comando de inicialização
-ENTRYPOINT ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+# Roda o servidor de arquivos na pasta crm na porta 8000 e em paralelo o Streamlit na 8501
+CMD ["sh", "-c", "cd crm && python -m http.server 8000 & streamlit run /app/app.py --server.port=8501 --server.address=0.0.0.0 --server.baseUrlPath=/prospect --server.fileWatcherType=none --browser.gatherUsageStats=false"]

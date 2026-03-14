@@ -1,8 +1,6 @@
 streamlit
-pandas
-plotly
-requests
-python-dotenv
-xlsxwriter
-openpyxl
 groq
+duckduckgo-search
+googlesearch-python
+openpyxl
+pandas
